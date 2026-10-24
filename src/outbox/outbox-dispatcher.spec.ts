@@ -10,6 +10,7 @@ import { Alerts } from '../observability/alerts';
 import { ReservationsRepository } from '../reservations/reservations.repository';
 import { ReservationsService } from '../reservations/reservations.service';
 import { ReservationEvent, ReservationStatus } from '../events/reservation-event';
+import { EventLogRepository } from '../events/event-log.repository';
 
 describe('OutboxDispatcher (PGlite)', () => {
   let db: Db;
@@ -100,7 +101,7 @@ describe('OutboxDispatcher (PGlite)', () => {
       data: { status, guest: { name: 'Ada', email: 'ada@example.com' }, checkIn: '2026-03-01', checkOut: '2026-03-04', roomType: 'double' },
     });
     const outbox = new OutboxRepository(db);
-    const service = new ReservationsService(db, new ReservationsRepository(db), outbox, new Alerts(metrics), metrics);
+    const service = new ReservationsService(db, new ReservationsRepository(db), outbox, new Alerts(metrics), metrics, new EventLogRepository(db));
     await service.apply(event('e1', 10, 'confirmed'));
     await service.apply(event('e2', 11, 'cancelled'));
 

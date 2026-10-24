@@ -1,5 +1,5 @@
 import { Scenario, Step } from './scenario';
-import { Target } from './target';
+import { SendResult, Target } from './target';
 
 export type ScenarioResult = {
   scenario: string;
@@ -17,9 +17,16 @@ const describeStep = (step: Step, index: number): string => {
   return `step ${index} emailSenderFails`;
 };
 
-/** Phase 1: deliver. Returns problems with individual responses (status/outcome mismatches). */
-async function deliver(target: Target, steps: Step[]): Promise<string[]> {
+/** What the event log should say for one response: 400 is logged as rejected. */
+const loggedOutcome = (res: SendResult): string => (res.status === 400 ? 'rejected' : (res.body?.outcome ?? `status ${res.status}`));
+
+/**
+ * Phase 1: deliver. Returns problems with individual responses (status/outcome mismatches), and
+ * the outcome of every delivery, one group per step (a concurrent step's group has no order).
+ */
+async function deliver(target: Target, steps: Step[]): Promise<{ failures: string[]; outcomes: string[][] }> {
   const failures: string[] = [];
+  const outcomes: string[][] = [];
   for (const [i, step] of steps.entries()) {
     const label = describeStep(step, i);
     if ('emailSenderFails' in step) {
@@ -33,21 +40,29 @@ async function deliver(target: Target, steps: Step[]): Promise<string[]> {
       }
     } else if ('sendConcurrently' in step) {
       const results = await Promise.all(step.sendConcurrently.map((e) => target.send(e)));
+      outcomes.push(results.map(loggedOutcome));
       results.forEach((r, k) => r.status !== 200 && failures.push(`${label} [${k}]: status ${r.status}, expected 200`));
     } else {
       const body = 'send' in step ? step.send : step.sendRaw;
       const expectedStatus = step.status ?? 200;
       const res = await target.send(body);
+      outcomes.push([loggedOutcome(res)]);
       if (res.status !== expectedStatus) failures.push(`${label}: status ${res.status}, expected ${expectedStatus}`);
       if (step.outcome && res.body?.outcome !== step.outcome) {
         failures.push(`${label}: outcome ${JSON.stringify(res.body?.outcome)}, expected "${step.outcome}"`);
       }
     }
   }
-  return failures;
+  return { failures, outcomes };
 }
 
-type Baseline = { emailsByReservation: Map<string, number>; suppressed: number; ties: number; deadLettered: number };
+type Baseline = {
+  emailsByReservation: Map<string, number>;
+  suppressed: number;
+  ties: number;
+  deadLettered: number;
+  logRows?: number;
+};
 
 const countByReservation = (delivered: { reservationId: string }[]) => {
   const counts = new Map<string, number>();
@@ -64,6 +79,7 @@ async function baseline(target: Target): Promise<Baseline> {
     suppressed: emails.suppressedDuplicates,
     ties: alerts.timestampTie,
     deadLettered: alerts.outboxDeadLettered,
+    logRows: (await target.eventLog?.())?.length,
   };
 }
 
@@ -127,16 +143,37 @@ async function verify(target: Target, scenario: Scenario, before: Baseline): Pro
   return failures;
 }
 
+/**
+ * Event log invariant (DECISIONS.md, section 11): one row per delivery, and each step's rows carry
+ * the outcomes its responses reported. Skipped when the target can't read the log (HTTP).
+ */
+async function verifyEventLog(target: Target, outcomes: string[][], before: Baseline): Promise<string[]> {
+  if (!target.eventLog) return [];
+  const rows = (await target.eventLog()).slice(before.logRows ?? 0);
+  const sent = outcomes.flat().length;
+  if (rows.length !== sent) return [`event log: ${rows.length} row(s) added, expected ${sent} (one per delivery)`];
+
+  const failures: string[] = [];
+  const sorted = (xs: string[]) => JSON.stringify([...xs].sort());
+  let at = 0;
+  for (const [i, group] of outcomes.entries()) {
+    const logged = rows.slice(at, (at += group.length));
+    if (sorted(logged) !== sorted(group)) failures.push(`event log, delivery group ${i}: logged ${sorted(logged)}, responses said ${sorted(group)}`);
+  }
+  return failures;
+}
+
 /** Send, settle, assert. Never throws for a mismatch: it reports everything that's wrong. */
 export async function runScenario(scenario: Scenario, target: Target): Promise<ScenarioResult> {
   const before = await baseline(target);
-  const failures = await deliver(target, scenario.steps);
+  const { failures, outcomes } = await deliver(target, scenario.steps);
   try {
     await target.settle();
   } catch (err) {
     failures.push(`settle failed: ${(err as Error).message}`);
   }
   failures.push(...(await verify(target, scenario, before)));
+  failures.push(...(await verifyEventLog(target, outcomes, before)));
   return { scenario: scenario.name, seed: scenario.seed, passed: failures.length === 0, failures };
 }
 

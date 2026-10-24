@@ -132,8 +132,8 @@ What we give up, knowingly:
 - **Same `eventId` with a different payload** (source bug) is silently treated as a
   duplicate, keeping the first. Could be detected for the latest event by storing a
   payload hash; not worth it in the time-box.
-- **Audit trail** of every received event. In production you'd keep a raw event log
-  anyway (for replay and debugging), but it isn't needed for correctness.
+- **Audit trail** of every received event. Since added as a raw event log (section 11),
+  for debugging and replay only; correctness still doesn't depend on it.
 
 Side effects stay safe because they are tied to an `applied` transition, and a no-op
 never triggers one. The email additionally has its own idempotency key (section 4).
@@ -281,7 +281,8 @@ so several dispatcher instances never pick the same row (a no-op on PGlite, corr
   Internal error -> **500** so the source retries (safe, because processing is idempotent).
 - Processing is inline (one transaction per event, then 200). At higher volume: persist the raw
   event, ack, process async.
-- Read side: `GET /reservations/:id`, `GET /reservations`, `GET /outbox` (for the demo and tests).
+- Read side: `GET /reservations/:id`, `GET /reservations`, `GET /outbox`,
+  `GET /events?reservationId=` (section 11), for the demo and tests.
 - Operator: `POST /outbox/retry-failed[?failedSince=]` -> `{ requeued, keys }` (section 4); 400 on
   a bad date.
 
@@ -289,8 +290,8 @@ so several dispatcher instances never pick the same row (a no-op on PGlite, corr
 
 ```
 src/
-  events/        event schema + validation (zod)
-  db/           Db interface, PGlite driver, schema migration (reservations, outbox)
+  events/        event schema + validation (zod), raw event log repository + GET /events
+  db/           Db interface, PGlite driver, schema migration (reservations, outbox, events_received)
   reservations/  decide() (pure), repository (insert-if-absent + row lock), service, controller
   outbox/        outbox repository, dispatcher (interval + retry)
   email/         EmailSender interface + FakeEmailSender (records sends, honours idempotency key, can fail)
@@ -449,3 +450,36 @@ Decisions:
 Not done (next steps): a latency histogram on the webhook and on `EmailSender.send`, Node
 process/default metrics (`collectDefaultMetrics`), and protecting `/metrics` from public access
 (it carries no PII, but it shouldn't be on the public ingress).
+
+## 11. Raw event log
+
+`events_received` is append-only: one row per **delivery** (duplicates and redeliveries
+included) with the raw body, the envelope fields that parsed, and the outcome (`applied`,
+`duplicate`, `stale`, `ignored`, `rejected`). It answers "what did the PMS actually send us for
+r04, and in what order?": `GET /events?reservationId=r04` returns `{ events, truncated }`, the
+newest 1000 deliveries in received order (`id`), with `truncated: true` when older ones were left
+out (a cursor is the next step if anyone needs to page back). Indexes: `(reservation_id, id)` for
+this read, `(received_at)` for retention.
+
+Where it is written:
+- `applied` / `duplicate` / `stale`: **inside the apply transaction** (`ReservationsService.apply`),
+  so the log and the state can't disagree.
+- `ignored` and `rejected` (400): a separate insert, since there is no state change to share a
+  transaction with. Rejected bodies are logged on purpose, that's where debugging matters most;
+  envelope columns are filled best effort (nullable). Logging a rejected body is best effort too:
+  if that insert fails we still answer 400, not 500.
+- 500s are not logged: the transaction rolled back and the source retries. They stay visible in
+  app logs and `reservation_events_total{outcome="error"}`.
+
+**Not used for dedupe.** Idempotency still comes from the ordering key (section 3); the log is
+audit and debugging only, so it can be truncated or retained freely. The e2e harness checks it:
+rows added == deliveries sent, and each step's rows carry the outcomes its responses reported
+(in-process target only; the HTTP target skips it).
+
+Stated, not built:
+- **Retention.** Bodies hold guest name and email (PII): delete rows after N days (a daily
+  `DELETE ... WHERE received_at < now() - interval 'N days'`, or partition by day and drop).
+  `GET /events` returns bodies, so like the other read routes it belongs behind auth (section 9).
+- **Replay.** Re-applying the `applied`/`duplicate`/`stale` rows in received order onto empty
+  tables reproduces the current state, because processing is idempotent and order-independent.
+  A future `npm run replay` (it must not re-enqueue emails that were already sent).

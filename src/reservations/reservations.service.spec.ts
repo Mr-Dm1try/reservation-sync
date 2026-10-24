@@ -1,5 +1,7 @@
+import { BadRequestException, Logger } from '@nestjs/common';
 import { Db } from '../db/db';
 import { createPgliteDb } from '../db/pglite-db';
+import { EventLogRepository } from '../events/event-log.repository';
 import { ReservationEvent, ReservationStatus } from '../events/reservation-event';
 import { Alerts } from '../observability/alerts';
 import { Metrics } from '../observability/metrics';
@@ -25,6 +27,7 @@ describe('ReservationsService.apply (PGlite)', () => {
   let db: Db;
   let repo: ReservationsRepository;
   let service: ReservationsService;
+  let eventLog: EventLogRepository;
   const outbox = () => db.query<{ key: string; payload: { to: string } }>(`SELECT key, payload FROM outbox`);
 
   // One database for the file (PGlite boot takes seconds), emptied before each test.
@@ -33,9 +36,10 @@ describe('ReservationsService.apply (PGlite)', () => {
     repo = new ReservationsRepository(db);
     const outboxRepo = new OutboxRepository(db);
     const metrics = new Metrics(outboxRepo);
-    service = new ReservationsService(db, repo, outboxRepo, new Alerts(metrics), metrics);
+    eventLog = new EventLogRepository(db);
+    service = new ReservationsService(db, repo, outboxRepo, new Alerts(metrics), metrics, eventLog);
   });
-  beforeEach(() => db.query(`TRUNCATE reservations_last_event, outbox`));
+  beforeEach(() => db.query(`TRUNCATE reservations_last_event, outbox, events_received`));
   afterAll(() => db.close());
 
   it('creates the record from the first event, whatever its type', async () => {
@@ -103,5 +107,65 @@ describe('ReservationsService.apply (PGlite)', () => {
     expect(results.filter((r) => r.outcome === 'applied').length).toBeGreaterThanOrEqual(1);
     expect(await repo.findOne('r1')).toMatchObject({ status: 'cancelled', lastEventId: 'e2' });
     expect(await repo.findAll()).toHaveLength(1);
+  });
+
+  describe('event log', () => {
+    const outcomes = async () => (await eventLog.list()).events.map((e) => [e.eventId, e.outcome]);
+    beforeAll(() => Logger.overrideLogger(false)); // receive() logs every delivery
+
+    it('records one row per delivery with its outcome, duplicates included', async () => {
+      await service.receive(event('e1', '2026-01-01T10:00:00Z'));
+      await service.receive(event('e2', '2026-01-01T11:00:00Z', 'confirmed'));
+      await service.receive(event('e1', '2026-01-01T10:00:00Z'));
+      await service.receive(event('e2', '2026-01-01T11:00:00Z', 'confirmed'));
+      await service.receive({ ...event('e3', '2026-01-01T12:00:00Z'), type: 'reservation.merged' });
+
+      expect(await outcomes()).toEqual([
+        ['e1', 'applied'],
+        ['e2', 'applied'],
+        ['e1', 'stale'],
+        ['e2', 'duplicate'],
+        ['e3', 'ignored'],
+      ]);
+      const [first] = (await eventLog.list('r1')).events;
+      expect(first).toMatchObject({ reservationId: 'r1', type: 'reservation.updated', occurredAt: '2026-01-01T10:00:00.000Z' });
+      expect(first.body).toEqual(event('e1', '2026-01-01T10:00:00Z'));
+    });
+
+    it('logs rejected bodies with whatever envelope fields they have, and still answers 400', async () => {
+      const noData = { ...event('e1', '2026-01-01T10:00:00Z'), data: { status: 'pending' } };
+      await expect(service.receive(noData)).rejects.toThrow(BadRequestException);
+      await expect(service.receive({ eventId: 'e2', occurredAt: 'not a date', reservationId: 42 })).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.receive('garbage')).rejects.toThrow(BadRequestException);
+
+      expect((await eventLog.list()).events).toMatchObject([
+        { eventId: 'e1', reservationId: 'r1', occurredAt: '2026-01-01T10:00:00.000Z', outcome: 'rejected', body: noData },
+        { eventId: 'e2', reservationId: null, occurredAt: null, outcome: 'rejected' },
+        { eventId: null, reservationId: null, outcome: 'rejected', body: 'garbage' },
+      ]);
+      expect(await repo.findAll()).toHaveLength(0);
+    });
+
+    it('writes nothing when the apply transaction rolls back (the source retries)', async () => {
+      const replace = repo.replace.bind(repo);
+      repo.replace = () => Promise.reject(new Error('db down'));
+      try {
+        await service.receive(event('e1', '2026-01-01T10:00:00Z'));
+        await expect(service.receive(event('e2', '2026-01-01T11:00:00Z'))).rejects.toThrow('db down');
+      } finally {
+        repo.replace = replace;
+      }
+      expect(await outcomes()).toEqual([['e1', 'applied']]);
+    });
+
+    it('lists the newest deliveries when over the limit, in received order, and says so', async () => {
+      for (const id of ['e1', 'e2', 'e3']) await service.receive(event(id, `2026-01-01T1${id[1]}:00:00Z`));
+      const page = await eventLog.list(undefined, 2);
+      expect(page.truncated).toBe(true);
+      expect(page.events.map((e) => e.eventId)).toEqual(['e2', 'e3']);
+      expect((await eventLog.list(undefined, 3)).truncated).toBe(false);
+    });
   });
 });

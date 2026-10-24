@@ -18,6 +18,7 @@ npm run test:unit
 npm run test:e2e          # catalogue + 20 generated chaos seeds + reshuffles
 FUZZ_SEEDS=200 npm run test:e2e   # more chaos
 curl localhost:3000/metrics       # Prometheus metrics (DECISIONS.md, section 10)
+curl 'localhost:3000/events?reservationId=r01'   # raw deliveries for one reservation, in received order (section 11)
 ```
 
 ## Simulate against a running server
@@ -35,8 +36,8 @@ npm run simulate -- --seed 42               # one generated chaos stream (use a 
 ```
 src/
   app.ts                  composition root: createApp(), used by main, tests and simulator
-  events/                 event schema (zod) and types: the contract with the source
-  db/                     Db port, PGlite adapter, schema (reservations_last_event, outbox)
+  events/                 event schema (zod) and types: the contract with the source; raw event log + GET /events
+  db/                     Db port, PGlite adapter, schema (reservations_last_event, outbox, events_received)
   reservations/           webhook + read API, decide(), repository
   outbox/                 dispatcher: sends pending emails with retries
   email/                  EmailSender port + FakeEmailSender (simulated provider)
@@ -50,3 +51,5 @@ test/                     e2e tests
 - Webhook auth: verify an HMAC signature from the PMS before parsing.
 - Multi-instance: the dispatcher already claims with `SKIP LOCKED` and a lease; `drainUntilIdle`
   stays a single-instance test helper.
+- Event log retention (bodies hold guest PII: delete after N days) and `npm run replay` from the
+  log (DECISIONS.md, section 11).
