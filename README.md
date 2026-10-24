@@ -32,3 +32,8 @@ src/
 simulator/                scenarios, generator, e2e runner, CLI
 test/                     e2e tests
 ```
+
+## Next steps (out of the time-box)
+
+- Outbox dead-letter: after N failed attempts mark the entry `failed` and alert, instead of retrying
+  every 5 minutes forever (backoff is capped, so attempts grow but the delay doesn't).
