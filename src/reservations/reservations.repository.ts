@@ -32,7 +32,7 @@ export class ReservationsRepository {
 
     return this.db.transaction(async (tx) => {
       const inserted = await tx.query(
-        `INSERT INTO reservations (reservation_id, occurred_at, last_event_id, status, data)
+        `INSERT INTO reservations_last_event (reservation_id, occurred_at, last_event_id, status, data)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (reservation_id) DO NOTHING
          RETURNING reservation_id`,
@@ -44,7 +44,7 @@ export class ReservationsRepository {
         result = { outcome: 'applied', tie: false };
       } else {
         const [current] = await tx.query<Pick<ReservationRow, 'occurred_at' | 'last_event_id'>>(
-          `SELECT occurred_at, last_event_id FROM reservations WHERE reservation_id = $1 FOR UPDATE`,
+          `SELECT occurred_at, last_event_id FROM reservations_last_event WHERE reservation_id = $1 FOR UPDATE`,
           [event.reservationId],
         );
         result = {
@@ -53,7 +53,7 @@ export class ReservationsRepository {
         };
         if (result.outcome === 'applied') {
           await tx.query(
-            `UPDATE reservations
+            `UPDATE reservations_last_event
              SET occurred_at = $2, last_event_id = $3, status = $4, data = $5, updated_at = now()
              WHERE reservation_id = $1`,
             params,
@@ -76,7 +76,7 @@ export class ReservationsRepository {
 
   async findOne(reservationId: string): Promise<ReservationView | undefined> {
     const [row] = await this.db.query<ReservationRow>(
-      `SELECT reservation_id, occurred_at, last_event_id, data FROM reservations WHERE reservation_id = $1`,
+      `SELECT reservation_id, occurred_at, last_event_id, data FROM reservations_last_event WHERE reservation_id = $1`,
       [reservationId],
     );
     return row && toView(row);
@@ -84,7 +84,7 @@ export class ReservationsRepository {
 
   async findAll(): Promise<ReservationView[]> {
     const rows = await this.db.query<ReservationRow>(
-      `SELECT reservation_id, occurred_at, last_event_id, data FROM reservations ORDER BY reservation_id`,
+      `SELECT reservation_id, occurred_at, last_event_id, data FROM reservations_last_event ORDER BY reservation_id`,
     );
     return rows.map(toView);
   }
