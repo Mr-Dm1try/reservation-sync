@@ -25,7 +25,7 @@ type ReceivedEventRow = {
   body: unknown;
 };
 
-/** Read cap for GET /events, so an unfiltered call can't return the whole table. */
+/** Read cap for GET /events: the newest N deliveries are returned, so recent ones are never cut. */
 export const EVENT_LOG_READ_LIMIT = 1000;
 
 /**
@@ -46,17 +46,21 @@ export class EventLogRepository {
     );
   }
 
-  /** Deliveries in received order, optionally for one reservation. */
-  async list(reservationId?: string): Promise<ReceivedEventView[]> {
+  /**
+   * The newest `limit` deliveries (optionally for one reservation), returned in received order.
+   * `truncated` = older rows exist that were left out.
+   */
+  async list(reservationId?: string, limit = EVENT_LOG_READ_LIMIT): Promise<{ events: ReceivedEventView[]; truncated: boolean }> {
     const rows = await this.db.query<ReceivedEventRow>(
       `SELECT id, received_at, event_id, reservation_id, type, occurred_at, outcome, body
        FROM events_received
        WHERE $1::text IS NULL OR reservation_id = $1
-       ORDER BY id
-       LIMIT ${EVENT_LOG_READ_LIMIT}`,
-      [reservationId ?? null],
+       ORDER BY id DESC
+       LIMIT $2`,
+      [reservationId ?? null, limit + 1],
     );
-    return rows.map(toView);
+    const truncated = rows.length > limit;
+    return { events: rows.slice(0, limit).reverse().map(toView), truncated };
   }
 }
 

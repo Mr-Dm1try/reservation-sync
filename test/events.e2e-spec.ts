@@ -21,17 +21,18 @@ describe('GET /events (e2e)', () => {
     await send({ ...created, data: {} }).expect(400);
 
     const res = await http().get('/events').query({ reservationId: 'r01' }).expect(200);
-    expect(res.body.map((e: { eventId: string; outcome: string }) => [e.eventId, e.outcome])).toEqual([
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.events.map((e: { eventId: string; outcome: string }) => [e.eventId, e.outcome])).toEqual([
       ['r01-e1', 'applied'],
       ['r01-e2', 'applied'],
       ['r01-e1', 'stale'],
       ['r01-e2', 'duplicate'],
       ['r01-e1', 'rejected'],
     ]);
-    expect(res.body[1]).toMatchObject({ reservationId: 'r01', type: 'reservation.updated', body: confirmed });
+    expect(res.body.events[1]).toMatchObject({ reservationId: 'r01', type: 'reservation.updated', body: confirmed });
 
     const all = await http().get('/events').expect(200);
-    expect(all.body).toHaveLength(6);
-    expect(all.body.map((e: { id: number }) => e.id)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(all.body.events).toHaveLength(6);
+    expect(all.body.events.map((e: { id: number }) => e.id)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 });

@@ -38,5 +38,6 @@ CREATE TABLE IF NOT EXISTS events_received (
   body           jsonb NOT NULL          -- raw body as received (holds guest PII)
 );
 
-CREATE INDEX IF NOT EXISTS events_received_reservation_idx ON events_received (reservation_id, received_at);
+CREATE INDEX IF NOT EXISTS events_received_reservation_idx ON events_received (reservation_id, id);  -- GET /events
+CREATE INDEX IF NOT EXISTS events_received_received_at_idx ON events_received (received_at);         -- retention
 `;

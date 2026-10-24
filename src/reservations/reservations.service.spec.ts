@@ -110,7 +110,7 @@ describe('ReservationsService.apply (PGlite)', () => {
   });
 
   describe('event log', () => {
-    const outcomes = async () => (await eventLog.list()).map((e) => [e.eventId, e.outcome]);
+    const outcomes = async () => (await eventLog.list()).events.map((e) => [e.eventId, e.outcome]);
     beforeAll(() => Logger.overrideLogger(false)); // receive() logs every delivery
 
     it('records one row per delivery with its outcome, duplicates included', async () => {
@@ -127,7 +127,7 @@ describe('ReservationsService.apply (PGlite)', () => {
         ['e2', 'duplicate'],
         ['e3', 'ignored'],
       ]);
-      const [first] = await eventLog.list('r1');
+      const [first] = (await eventLog.list('r1')).events;
       expect(first).toMatchObject({ reservationId: 'r1', type: 'reservation.updated', occurredAt: '2026-01-01T10:00:00.000Z' });
       expect(first.body).toEqual(event('e1', '2026-01-01T10:00:00Z'));
     });
@@ -140,7 +140,7 @@ describe('ReservationsService.apply (PGlite)', () => {
       );
       await expect(service.receive('garbage')).rejects.toThrow(BadRequestException);
 
-      expect(await eventLog.list()).toMatchObject([
+      expect((await eventLog.list()).events).toMatchObject([
         { eventId: 'e1', reservationId: 'r1', occurredAt: '2026-01-01T10:00:00.000Z', outcome: 'rejected', body: noData },
         { eventId: 'e2', reservationId: null, occurredAt: null, outcome: 'rejected' },
         { eventId: null, reservationId: null, outcome: 'rejected', body: 'garbage' },
@@ -158,6 +158,14 @@ describe('ReservationsService.apply (PGlite)', () => {
         repo.replace = replace;
       }
       expect(await outcomes()).toEqual([['e1', 'applied']]);
+    });
+
+    it('lists the newest deliveries when over the limit, in received order, and says so', async () => {
+      for (const id of ['e1', 'e2', 'e3']) await service.receive(event(id, `2026-01-01T1${id[1]}:00:00Z`));
+      const page = await eventLog.list(undefined, 2);
+      expect(page.truncated).toBe(true);
+      expect(page.events.map((e) => e.eventId)).toEqual(['e2', 'e3']);
+      expect((await eventLog.list(undefined, 3)).truncated).toBe(false);
     });
   });
 });

@@ -438,8 +438,10 @@ process/default metrics (`collectDefaultMetrics`), and protecting `/metrics` fro
 `events_received` is append-only: one row per **delivery** (duplicates and redeliveries
 included) with the raw body, the envelope fields that parsed, and the outcome (`applied`,
 `duplicate`, `stale`, `ignored`, `rejected`). It answers "what did the PMS actually send us for
-r04, and in what order?": `GET /events?reservationId=r04` returns the deliveries by `id`
-(received order).
+r04, and in what order?": `GET /events?reservationId=r04` returns `{ events, truncated }`, the
+newest 1000 deliveries in received order (`id`), with `truncated: true` when older ones were left
+out (a cursor is the next step if anyone needs to page back). Indexes: `(reservation_id, id)` for
+this read, `(received_at)` for retention.
 
 Where it is written:
 - `applied` / `duplicate` / `stale`: **inside the apply transaction** (`ReservationsService.apply`),
