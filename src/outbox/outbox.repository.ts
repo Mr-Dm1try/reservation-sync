@@ -115,6 +115,22 @@ export class OutboxRepository {
     return row.n;
   }
 
+  /** For the metrics gauges. */
+  async countByStatus(): Promise<Record<string, number>> {
+    const rows = await this.db.query<{ status: string; n: number }>(
+      `SELECT status, count(*)::int AS n FROM outbox GROUP BY status`,
+    );
+    return Object.fromEntries(rows.map((r) => [r.status, r.n]));
+  }
+
+  /** Seconds since the oldest pending entry was created; 0 if none is pending. */
+  async oldestPendingAgeSeconds(): Promise<number> {
+    const [row] = await this.db.query<{ age: number | null }>(
+      `SELECT extract(epoch FROM now() - min(created_at))::float8 AS age FROM outbox WHERE status = 'pending'`,
+    );
+    return row.age ?? 0;
+  }
+
   async list(): Promise<OutboxEntryView[]> {
     const rows = await this.db.query<Record<string, any>>(
       `SELECT key, reservation_id, kind, status, attempts, last_error, next_attempt_at, sent_at

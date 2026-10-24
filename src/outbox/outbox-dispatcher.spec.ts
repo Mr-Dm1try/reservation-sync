@@ -3,6 +3,7 @@ import { Db } from '../db/db';
 import { createPgliteDb } from '../db/pglite-db';
 import { EmailMessage } from '../email/email-sender';
 import { FakeEmailSender } from '../email/fake-email-sender';
+import { Metrics } from '../observability/metrics';
 import { OutboxDispatcher } from './outbox-dispatcher';
 import { ClaimedEntry, OutboxRepository } from './outbox.repository';
 import { Alerts } from '../observability/alerts';
@@ -14,6 +15,7 @@ describe('OutboxDispatcher (PGlite)', () => {
   let db: Db;
   let sender: FakeEmailSender;
   let dispatcher: OutboxDispatcher;
+  let metrics: Metrics;
 
   const enqueue = (reservationId: string) =>
     db.query(
@@ -35,7 +37,8 @@ describe('OutboxDispatcher (PGlite)', () => {
   beforeEach(async () => {
     await db.query(`TRUNCATE outbox, reservations_last_event`);
     sender = new FakeEmailSender();
-    dispatcher = new OutboxDispatcher(new OutboxRepository(db), sender, null);
+    metrics = new Metrics(new OutboxRepository(db));
+    dispatcher = new OutboxDispatcher(new OutboxRepository(db), sender, null, metrics);
   });
   afterAll(() => db.close());
 
@@ -62,6 +65,8 @@ describe('OutboxDispatcher (PGlite)', () => {
     await dispatcher.drainUntilIdle();
     expect(sender.delivered).toHaveLength(1);
     expect(await row('confirmation:r1')).toMatchObject({ status: 'sent', attempts: 2, last_error: null });
+    const sends = Object.fromEntries((await metrics.outboxSends.get()).values.map((v) => [v.labels.result, v.value]));
+    expect(sends).toEqual({ sent: 1, failed: 1, skipped: 0 });
   });
 
   it('drainUntilIdle drains more than one batch and survives repeated failures', async () => {
@@ -95,7 +100,7 @@ describe('OutboxDispatcher (PGlite)', () => {
       data: { status, guest: { name: 'Ada', email: 'ada@example.com' }, checkIn: '2026-03-01', checkOut: '2026-03-04', roomType: 'double' },
     });
     const outbox = new OutboxRepository(db);
-    const service = new ReservationsService(db, new ReservationsRepository(db), outbox, new Alerts());
+    const service = new ReservationsService(db, new ReservationsRepository(db), outbox, new Alerts(metrics), metrics);
     await service.apply(event('e1', 10, 'confirmed'));
     await service.apply(event('e2', 11, 'cancelled'));
 
@@ -105,10 +110,12 @@ describe('OutboxDispatcher (PGlite)', () => {
       await service.apply(event('e3', 12, 'confirmed'));
       return markSkipped(entry, reason);
     };
-    await new OutboxDispatcher(outbox, sender, null).drainUntilIdle();
+    await new OutboxDispatcher(outbox, sender, null, metrics).drainUntilIdle();
 
     expect(sender.deliveredFor('r1')).toHaveLength(1);
     expect(await row('confirmation:r1')).toMatchObject({ status: 'sent' });
+    const sends = Object.fromEntries((await metrics.outboxSends.get()).values.map((v) => [v.labels.result, v.value]));
+    expect(sends).toEqual({ sent: 1, failed: 0, skipped: 0 });
   });
 
   it('drainUntilIdle never re-claims an entry the background tick is still sending', async () => {

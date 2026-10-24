@@ -1,14 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Metrics } from './metrics';
 
 /**
  * Things that "should never happen" and need a human to look (DECISIONS.md, section 2).
- * In production these would be error logs + metrics wired to alerting; here we log at
- * error level and keep counters so tests can assert on them.
+ * Each one is an error log plus a Prometheus counter (alert on any increase); `counts` mirrors
+ * the counter so tests and the simulator can assert on it without parsing /metrics.
  */
 @Injectable()
 export class Alerts {
   private readonly logger = new Logger('Alerts');
   readonly counts = { timestampTie: 0 };
+
+  constructor(private readonly metrics: Metrics) {}
 
   /**
    * Two different events for one reservation share the same occurredAt.
@@ -18,6 +21,7 @@ export class Alerts {
    */
   timestampTie(reservationId: string, storedEventId: string, incomingEventId: string): void {
     this.counts.timestampTie++;
+    this.metrics.timestampTies.inc();
     this.logger.error(
       `reservation_event_timestamp_tie reservation=${reservationId} stored=${storedEventId} incoming=${incomingEventId}`,
     );

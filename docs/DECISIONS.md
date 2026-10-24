@@ -52,7 +52,7 @@ Assumptions this relies on (stated in the README):
   comparison of mixed offsets).
 - The tie-break is arbitrary: with two edits in the same millisecond we pick one
   deterministically, but it may not be the "real" last one. This should never happen with a ms/µs-precision source clock, so it raises an **alert**
-  (error log + `reservation_event_timestamp_tie` metric; in the demo just the error log)
+  (error log + `reservation_event_timestamp_tie_total` counter, section 10)
   rather than a warning: it means the source's ordering can't be trusted for that reservation.
 
 #### Why not a `version` field? (and what it would simplify if the source had one)
@@ -400,3 +400,34 @@ not per-delivery outcomes), which is why both sources exist.
 
 Running against a real Postgres (driver swap + docker-compose, listed as an extra), auth/HMAC signature check on the webhook, multi-instance
 deployment, cancellation emails, UI. Each is listed in the README as "next steps".
+
+## 10. Observability (metrics)
+
+`GET /metrics` serves Prometheus text via `prom-client`, one registry per app instance (not the
+global default) so tests can boot several apps in one process. Small on purpose: one series per
+question an on-call person would ask.
+
+| Metric | Type | Question it answers | Alert idea |
+|---|---|---|---|
+| `reservation_events_total{outcome}` | counter | What is the feed doing? `applied`, `duplicate`, `stale`, `ignored` (unknown type), `rejected` (400), `error` (500) | `error` or `rejected` rate > 0 for 5m; a jump in `stale`/`duplicate` means the source is retrying hard |
+| `reservation_event_timestamp_tie_total` | counter | Did two different events share an `occurredAt`? (section 2) | any increase: page, the source's ordering can't be trusted |
+| `outbox_send_total{result}` | counter | Email sends: `sent`, `failed` (will retry), `skipped` (cancelled before send) | `failed` / (`sent` + `failed`) high: provider trouble |
+| `outbox_entries{status}` | gauge | Outbox size by `pending`, `sent`, `skipped` | `pending` growing |
+| `outbox_oldest_pending_age_seconds` | gauge | Is any email stuck? | > a few minutes: guests aren't getting confirmations |
+
+Decisions:
+- **Counters where things happen, gauges from the database at scrape time.** Counters are
+  per process (reset on restart; `rate()` handles that). The outbox gauges are a `count(*)` and
+  a `min(created_at)` on scrape, so they're true across restarts and dispatcher instances. Cost:
+  two small queries per scrape (fine at outbox sizes we expect; at scale, count only `pending`).
+  Age counts from `created_at`, so an entry revived from `skipped` (section 4) reads as old.
+- **The tie counter counts deliveries, not anomalies** (each redelivery of the losing event
+  bumps it again, see `Alerts`). So the alert is "increased", not "equals N".
+- **Labels are bounded enums only.** No `reservationId` or guest data: unbounded cardinality
+  and PII. Per-reservation detail stays in the logs.
+- `Alerts.counts` stays as an in-memory mirror for the simulator and tests, so they don't parse `/metrics`.
+- Every label value is pre-created at 0, so dashboards show 0 instead of "no data".
+
+Not done (next steps): a latency histogram on the webhook and on `EmailSender.send`, Node
+process/default metrics (`collectDefaultMetrics`), and protecting `/metrics` from public access
+(it carries no PII, but it shouldn't be on the public ingress).

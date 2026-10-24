@@ -7,6 +7,7 @@ import {
   reservationEventSchema,
 } from '../events/reservation-event';
 import { Alerts } from '../observability/alerts';
+import { Metrics } from '../observability/metrics';
 import { OutboxRepository } from '../outbox/outbox.repository';
 import { confirmationEntry } from './confirmation-email';
 import { decide, Decision, Outcome } from './decide';
@@ -28,16 +29,26 @@ export class ReservationsService {
     private readonly reservations: ReservationsRepository,
     private readonly outbox: OutboxRepository,
     private readonly alerts: Alerts,
+    private readonly metrics: Metrics,
   ) {}
 
   /** Two-phase parse (envelope, then full event for known types), then apply. */
   async receive(body: unknown): Promise<{ outcome: WebhookOutcome }> {
+    const outcome = await this.process(body).catch((err) => {
+      this.metrics.events.inc({ outcome: err instanceof BadRequestException ? 'rejected' : 'error' });
+      throw err;
+    });
+    this.metrics.events.inc({ outcome });
+    return { outcome };
+  }
+
+  private async process(body: unknown): Promise<WebhookOutcome> {
     const envelope = eventEnvelopeSchema.safeParse(body);
     if (!envelope.success) throw invalid(envelope.error.issues);
 
     if (!isKnownEventType(envelope.data.type)) {
       this.logger.warn(`ignored unknown event type=${envelope.data.type} eventId=${envelope.data.eventId}`);
-      return { outcome: 'ignored' };
+      return 'ignored';
     }
 
     const parsed = reservationEventSchema.safeParse(body);
@@ -47,7 +58,7 @@ export class ReservationsService {
     const result = await this.apply(event);
     if (result.tie) this.alerts.timestampTie(event.reservationId, result.storedEventId!, event.eventId);
     this.logger.log(`event=${event.eventId} reservation=${event.reservationId} outcome=${result.outcome}`);
-    return { outcome: result.outcome };
+    return result.outcome;
   }
 
   /**
