@@ -39,7 +39,7 @@ describe('OutboxDispatcher (PGlite)', () => {
     await db.query(`TRUNCATE outbox, reservations_last_event`);
     sender = new FakeEmailSender();
     metrics = new Metrics(new OutboxRepository(db));
-    dispatcher = new OutboxDispatcher(new OutboxRepository(db), sender, null, metrics);
+    dispatcher = new OutboxDispatcher(new OutboxRepository(db), sender, null, metrics, new Alerts(metrics));
   });
   afterAll(() => db.close());
 
@@ -67,7 +67,7 @@ describe('OutboxDispatcher (PGlite)', () => {
     expect(sender.delivered).toHaveLength(1);
     expect(await row('confirmation:r1')).toMatchObject({ status: 'sent', attempts: 2, last_error: null });
     const sends = Object.fromEntries((await metrics.outboxSends.get()).values.map((v) => [v.labels.result, v.value]));
-    expect(sends).toEqual({ sent: 1, failed: 1, skipped: 0 });
+    expect(sends).toEqual({ sent: 1, failed: 1, skipped: 0, dead_lettered: 0 });
   });
 
   it('drainUntilIdle drains more than one batch and survives repeated failures', async () => {
@@ -111,12 +111,12 @@ describe('OutboxDispatcher (PGlite)', () => {
       await service.apply(event('e3', 12, 'confirmed'));
       return markSkipped(entry, reason);
     };
-    await new OutboxDispatcher(outbox, sender, null, metrics).drainUntilIdle();
+    await new OutboxDispatcher(outbox, sender, null, metrics, new Alerts(metrics)).drainUntilIdle();
 
     expect(sender.deliveredFor('r1')).toHaveLength(1);
     expect(await row('confirmation:r1')).toMatchObject({ status: 'sent' });
     const sends = Object.fromEntries((await metrics.outboxSends.get()).values.map((v) => [v.labels.result, v.value]));
-    expect(sends).toEqual({ sent: 1, failed: 0, skipped: 0 });
+    expect(sends).toEqual({ sent: 1, failed: 0, skipped: 0, dead_lettered: 0 });
   });
 
   it('drainUntilIdle never re-claims an entry the background tick is still sending', async () => {
@@ -137,6 +137,43 @@ describe('OutboxDispatcher (PGlite)', () => {
 
     expect(sender.attempts).toBe(1);
     expect(sender.suppressedDuplicates).toBe(0);
+  });
+
+  it('dead-letters an entry whose next retry would fall outside the retry window, and alerts', async () => {
+    const alerts = new Alerts(metrics);
+    const outbox = new OutboxRepository(db);
+    // Window 0: the first failure already can't be retried in time.
+    await enqueue('r1');
+    sender.failNext(1);
+    await new OutboxDispatcher(outbox, sender, null, metrics, alerts, 0).drainUntilIdle();
+
+    expect(sender.delivered).toHaveLength(0);
+    expect(await row('confirmation:r1')).toMatchObject({ status: 'failed', attempts: 1 });
+    expect((await row('confirmation:r1')).last_error).toMatch(/transient/i);
+    expect(alerts.counts.outboxDeadLettered).toBe(1);
+    expect(await outbox.pendingCount()).toBe(0);
+    const sends = Object.fromEntries((await metrics.outboxSends.get()).values.map((v) => [v.labels.result, v.value]));
+    expect(sends).toEqual({ sent: 0, failed: 0, skipped: 0, dead_lettered: 1 });
+  });
+
+  it('retryFailed requeues dead-lettered entries (optionally only recent ones) and they send once', async () => {
+    const outbox = new OutboxRepository(db);
+    await enqueue('r1');
+    await enqueue('r2');
+    sender.failNext(2);
+    await new OutboxDispatcher(outbox, sender, null, metrics, new Alerts(metrics), 0).drainUntilIdle();
+    await db.query(`UPDATE outbox SET failed_at = now() - interval '1 day' WHERE key = 'confirmation:r1'`);
+
+    expect(await outbox.retryFailed({ failedSince: new Date(Date.now() - 60_000).toISOString() })).toEqual([
+      'confirmation:r2',
+    ]);
+    expect(await row('confirmation:r2')).toMatchObject({ status: 'pending', attempts: 0, due: true });
+    expect(await outbox.retryFailed()).toEqual(['confirmation:r1']);
+    expect(await outbox.retryFailed()).toEqual([]);
+
+    await dispatcher.drainUntilIdle();
+    expect(sender.delivered.map((m) => m.reservationId).sort()).toEqual(['r1', 'r2']);
+    expect(await row('confirmation:r1')).toMatchObject({ status: 'sent', last_error: null });
   });
 
   it('drainUntilIdle throws when entries are still pending after maxRounds', async () => {

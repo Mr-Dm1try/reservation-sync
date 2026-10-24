@@ -9,7 +9,7 @@ import { Metrics } from './metrics';
 @Injectable()
 export class Alerts {
   private readonly logger = new Logger('Alerts');
-  readonly counts = { timestampTie: 0 };
+  readonly counts = { timestampTie: 0, outboxDeadLettered: 0 };
 
   constructor(private readonly metrics: Metrics) {}
 
@@ -25,5 +25,11 @@ export class Alerts {
     this.logger.error(
       `reservation_event_timestamp_tie reservation=${reservationId} stored=${storedEventId} incoming=${incomingEventId}`,
     );
+  }
+
+  /** An email gave up after its retry window: the guest has NOT been told. Needs a bulk retry or a look. */
+  outboxDeadLettered(key: string, attempts: number, lastError: string): void {
+    this.counts.outboxDeadLettered++;
+    this.logger.error(`outbox_dead_lettered key=${key} attempts=${attempts} lastError=${lastError}`);
   }
 }

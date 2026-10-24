@@ -16,11 +16,13 @@ export type EmailReport = {
 export interface Target {
   send(body: unknown): Promise<SendResult>;
   failNextEmails(count: number): Promise<void>;
+  /** The operator's bulk retry of dead-lettered outbox entries. */
+  retryFailedEmails(): Promise<{ requeued: number }>;
   /** Lets background work finish: drains the outbox until idle. */
   settle(): Promise<void>;
   reservations(): Promise<ReservationView[]>;
   emails(): Promise<EmailReport>;
-  alerts(): Promise<{ timestampTie: number }>;
+  alerts(): Promise<{ timestampTie: number; outboxDeadLettered: number }>;
   /** Outcomes in the raw event log, in received order. In-process only (reads the DB directly). */
   eventLog?(): Promise<string[]>;
   close(): Promise<void>;
@@ -35,10 +37,16 @@ async function pendingOutbox(handle: AppHandle): Promise<number> {
  * Fresh app per scenario, driven over real HTTP via supertest. Booting PGlite takes seconds, so
  * a test file can pass one shared `db`: its tables are emptied first, and it is left open on close.
  */
-export async function inProcessTarget(options: { db?: Db } = {}): Promise<Target> {
+export async function inProcessTarget(options: { db?: Db; outboxRetryWindowMs?: number } = {}): Promise<Target> {
   if (options.db) await options.db.query(`TRUNCATE reservations_last_event, outbox, events_received`);
   const emailSender = new FakeEmailSender();
-  const handle = await createApp({ db: options.db, emailSender, dispatcherIntervalMs: null, logger: false });
+  const handle = await createApp({
+    db: options.db,
+    emailSender,
+    dispatcherIntervalMs: null,
+    outboxRetryWindowMs: options.outboxRetryWindowMs,
+    logger: false,
+  });
   const http = handle.app.getHttpServer();
 
   return {
@@ -48,6 +56,11 @@ export async function inProcessTarget(options: { db?: Db } = {}): Promise<Target
     },
     async failNextEmails(count) {
       emailSender.failNext(count);
+    },
+    async retryFailedEmails() {
+      const res = await request(http).post('/outbox/retry-failed');
+      if (res.status !== 200) throw new Error(`POST /outbox/retry-failed -> ${res.status}`);
+      return res.body;
     },
     settle: () => handle.dispatcher.drainUntilIdle(),
     async reservations() {
@@ -98,6 +111,7 @@ export function httpTarget(baseUrl: string): Target {
   return {
     send: (body) => call('POST', '/webhooks/reservations', body),
     failNextEmails: async (count) => void (await ok('POST', '/debug/email-failures', { count })),
+    retryFailedEmails: () => ok('POST', '/outbox/retry-failed'),
     async settle(timeoutMs = 30_000) {
       const deadline = Date.now() + timeoutMs;
       while ((await ok('GET', '/debug/emails')).pendingOutbox > 0) {

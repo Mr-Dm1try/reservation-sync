@@ -339,4 +339,45 @@ export const catalogue: Scenario[] = [
       },
     };
   })(),
+
+  (() => {
+    const x = history('r21').next('reservation.created', { status: 'confirmed' });
+    // DECISIONS section 4: the give-up rule is a time window (2h), not an attempt count, so a long
+    // outage inside the window is just more retries. No alert, still exactly one email.
+    return {
+      catalogue: 21,
+      name: 'long email provider outage inside the retry window: still one email, no alert',
+      inProcessOnly: 'about an hour of real backoff on a live server',
+      steps: [{ emailSenderFails: 30 }, { send: x }, { send: x, outcome: 'duplicate' }],
+      expect: { reservations: { r21: { status: 'confirmed' } }, emails: { r21: 1 } },
+    };
+  })(),
+
+  (() => {
+    const x = history('r22a').next('reservation.created', { status: 'confirmed' });
+    const y = history('r22b').next('reservation.created', { status: 'confirmed' });
+    // DECISIONS section 4: past the window the entry is dead-lettered ('failed') and alerted.
+    // Redeliveries don't revive it; only the operator's bulk retry does, and it sends once.
+    return {
+      catalogue: 22,
+      name: 'outage outlasts the retry window: dead-lettered, alerted, bulk retry sends once',
+      app: { outboxRetryWindowMs: 0 }, // any failure is already past the window
+      inProcessOnly: 'needs a server started with a zero retry window',
+      steps: [
+        { emailSenderFails: 1 },
+        { send: x },
+        { drainOutbox: true },
+        { send: y },
+        { send: x, outcome: 'duplicate' },
+        { drainOutbox: true },
+        { retryFailedEmails: true, requeued: 1 },
+        { retryFailedEmails: true, requeued: 0 },
+      ],
+      expect: {
+        reservations: { r22a: { status: 'confirmed' }, r22b: { status: 'confirmed' } },
+        emails: { r22a: 1, r22b: 1 },
+        alerts: { outboxDeadLettered: 1 },
+      },
+    };
+  })(),
 ];

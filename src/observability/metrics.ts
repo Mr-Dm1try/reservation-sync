@@ -3,9 +3,9 @@ import { Counter, Gauge, Registry } from 'prom-client';
 import { OutboxRepository } from '../outbox/outbox.repository';
 
 export type EventOutcomeLabel = 'applied' | 'duplicate' | 'stale' | 'ignored' | 'rejected' | 'error';
-export type SendResultLabel = 'sent' | 'failed' | 'skipped';
+export type SendResultLabel = 'sent' | 'failed' | 'skipped' | 'dead_lettered';
 
-const OUTBOX_STATUSES = ['pending', 'sent', 'skipped'] as const;
+const OUTBOX_STATUSES = ['pending', 'sent', 'skipped', 'failed'] as const;
 
 /**
  * Prometheus metrics, served at GET /metrics (DECISIONS.md, section 10).
@@ -34,7 +34,7 @@ export class Metrics {
 
   readonly outboxSends = new Counter({
     name: 'outbox_send_total',
-    help: 'Outbox entries processed by result (sent, failed = will retry, skipped = reservation cancelled before send)',
+    help: 'Outbox entries processed by result (sent, failed = will retry, skipped = reservation cancelled before send, dead_lettered = gave up after the retry window: alert on any increase)',
     labelNames: ['result'] as const,
     registers: [this.registry],
   });
@@ -44,7 +44,9 @@ export class Metrics {
     for (const outcome of ['applied', 'duplicate', 'stale', 'ignored', 'rejected', 'error'] satisfies EventOutcomeLabel[]) {
       this.events.inc({ outcome }, 0);
     }
-    for (const result of ['sent', 'failed', 'skipped'] satisfies SendResultLabel[]) this.outboxSends.inc({ result }, 0);
+    for (const result of ['sent', 'failed', 'skipped', 'dead_lettered'] satisfies SendResultLabel[]) {
+      this.outboxSends.inc({ result }, 0);
+    }
 
     new Gauge({
       name: 'outbox_entries',

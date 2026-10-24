@@ -37,7 +37,13 @@ async function main() {
   // A shared server accumulates state, so only check the reservations each scenario names.
   const target = httpTarget(url);
   let failed = 0;
+  let skipped = 0;
   for (const scenario of scenarios) {
+    if (scenario.inProcessOnly) {
+      console.log(`SKIP  #${scenario.catalogue} ${scenario.name} (${scenario.inProcessOnly}; runs in npm test)`);
+      skipped++;
+      continue;
+    }
     const emails = { ...scenario.expect.emails };
     for (const id of scenario.expect.timingDependentEmails ?? []) emails[id] = 'atMostOne';
     const live = { ...scenario, expect: { ...scenario.expect, emails, exhaustive: false } };
@@ -45,7 +51,8 @@ async function main() {
     console.log(formatResult({ ...result, scenario: `${scenario.catalogue ? `#${scenario.catalogue} ` : ''}${result.scenario}` }));
     if (!result.passed) failed++;
   }
-  console.log(`\n${scenarios.length - failed}/${scenarios.length} passed`);
+  const ran = scenarios.length - skipped;
+  console.log(`\n${ran - failed}/${ran} passed${skipped ? `, ${skipped} skipped` : ''}`);
   process.exitCode = failed ? 1 : 0;
 }
 

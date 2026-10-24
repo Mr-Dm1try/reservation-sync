@@ -12,6 +12,8 @@ const describeStep = (step: Step, index: number): string => {
   if ('send' in step) return `step ${index} send ${step.send.eventId}`;
   if ('sendConcurrently' in step) return `step ${index} sendConcurrently ${step.sendConcurrently.map((e) => e.eventId).join(',')}`;
   if ('sendRaw' in step) return `step ${index} sendRaw`;
+  if ('drainOutbox' in step) return `step ${index} drainOutbox`;
+  if ('retryFailedEmails' in step) return `step ${index} retryFailedEmails`;
   return `step ${index} emailSenderFails`;
 };
 
@@ -29,6 +31,13 @@ async function deliver(target: Target, steps: Step[]): Promise<{ failures: strin
     const label = describeStep(step, i);
     if ('emailSenderFails' in step) {
       await target.failNextEmails(step.emailSenderFails);
+    } else if ('drainOutbox' in step) {
+      await target.settle();
+    } else if ('retryFailedEmails' in step) {
+      const { requeued } = await target.retryFailedEmails();
+      if (step.requeued !== undefined && requeued !== step.requeued) {
+        failures.push(`${label}: requeued ${requeued}, expected ${step.requeued}`);
+      }
     } else if ('sendConcurrently' in step) {
       const results = await Promise.all(step.sendConcurrently.map((e) => target.send(e)));
       outcomes.push(results.map(loggedOutcome));
@@ -47,7 +56,13 @@ async function deliver(target: Target, steps: Step[]): Promise<{ failures: strin
   return { failures, outcomes };
 }
 
-type Baseline = { emailsByReservation: Map<string, number>; suppressed: number; ties: number; logRows?: number };
+type Baseline = {
+  emailsByReservation: Map<string, number>;
+  suppressed: number;
+  ties: number;
+  deadLettered: number;
+  logRows?: number;
+};
 
 const countByReservation = (delivered: { reservationId: string }[]) => {
   const counts = new Map<string, number>();
@@ -63,6 +78,7 @@ async function baseline(target: Target): Promise<Baseline> {
     emailsByReservation: countByReservation(emails.delivered),
     suppressed: emails.suppressedDuplicates,
     ties: alerts.timestampTie,
+    deadLettered: alerts.outboxDeadLettered,
     logRows: (await target.eventLog?.())?.length,
   };
 }
@@ -114,9 +130,15 @@ async function verify(target: Target, scenario: Scenario, before: Baseline): Pro
   const suppressed = emails.suppressedDuplicates - before.suppressed;
   if (suppressed !== 0) failures.push(`email provider suppressed ${suppressed} duplicate send(s): the app sent twice`);
 
-  const ties = (await target.alerts()).timestampTie - before.ties;
+  const alerts = await target.alerts();
+  const ties = alerts.timestampTie - before.ties;
   const wantTies = expect.alerts?.timestampTie ?? 0;
   if (ties !== wantTies) failures.push(`alerts.timestampTie: ${ties}, expected ${wantTies}`);
+  const deadLettered = alerts.outboxDeadLettered - before.deadLettered;
+  const wantDeadLettered = expect.alerts?.outboxDeadLettered ?? 0;
+  if (deadLettered !== wantDeadLettered) {
+    failures.push(`alerts.outboxDeadLettered: ${deadLettered}, expected ${wantDeadLettered}`);
+  }
 
   return failures;
 }
