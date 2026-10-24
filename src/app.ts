@@ -6,6 +6,8 @@ import { createPgliteDb } from './db/pglite-db';
 import { DebugController } from './debug.controller';
 import { EMAIL_SENDER, EmailSender } from './email/email-sender';
 import { FakeEmailSender } from './email/fake-email-sender';
+import { EventLogRepository } from './events/event-log.repository';
+import { EventsController } from './events/events.controller';
 import { HealthController } from './health.controller';
 import { Alerts } from './observability/alerts';
 import { Metrics } from './observability/metrics';
@@ -44,7 +46,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<AppHand
   const debug = options.debugEndpoints ?? process.env.DEBUG_ENDPOINTS === '1';
 
   @Module({
-    controllers: [HealthController, MetricsController, ReservationsController, OutboxController, ...(debug ? [DebugController] : [])],
+    controllers: [HealthController, MetricsController, ReservationsController, OutboxController, EventsController, ...(debug ? [DebugController] : [])],
     providers: [
       { provide: DB, useValue: db },
       { provide: EMAIL_SENDER, useValue: emailSender },
@@ -54,6 +56,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<AppHand
       Alerts,
       ReservationsRepository,
       OutboxRepository,
+      EventLogRepository,
       ReservationsService,
       OutboxDispatcher,
     ],
