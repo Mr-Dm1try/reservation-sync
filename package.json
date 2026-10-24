@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "ts-node -r tsconfig-paths/register src/main.ts",
+    "start:debug": "DEBUG_ENDPOINTS=1 npm start",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "test:unit": "NODE_OPTIONS=--experimental-vm-modules jest --selectProjects unit",
     "test:e2e": "NODE_OPTIONS=--experimental-vm-modules jest --selectProjects e2e",

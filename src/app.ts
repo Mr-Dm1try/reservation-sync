@@ -16,7 +16,7 @@ export type CreateAppOptions = {
   emailSender?: EmailSender;
   /** null = no background polling; tests call dispatcher.drainUntilIdle() instead. */
   dispatcherIntervalMs?: number | null;
-  /** Registers GET /debug/emails. Defaults to NODE_ENV !== 'production'. */
+  /** Registers the /debug routes. Opt-in: defaults to DEBUG_ENDPOINTS=1, so a deploy can't expose them by accident. */
   debugEndpoints?: boolean;
   logger?: false | ('error' | 'warn' | 'log')[];
 };
@@ -34,14 +34,15 @@ export type AppHandle = {
 export async function createApp(options: CreateAppOptions = {}): Promise<AppHandle> {
   const db = options.db ?? (await createPgliteDb());
   const emailSender = options.emailSender ?? new FakeEmailSender();
-  const debug = options.debugEndpoints ?? process.env.NODE_ENV !== 'production';
+  const debug = options.debugEndpoints ?? process.env.DEBUG_ENDPOINTS === '1';
 
   @Module({
     controllers: [HealthController, ReservationsController, ...(debug ? [DebugController] : [])],
     providers: [
       { provide: DB, useValue: db },
       { provide: EMAIL_SENDER, useValue: emailSender },
-      { provide: DISPATCHER_INTERVAL_MS, useValue: options.dispatcherIntervalMs ?? 500 },
+      // Not `??`: null must stay null (it means "no polling").
+      { provide: DISPATCHER_INTERVAL_MS, useValue: options.dispatcherIntervalMs === undefined ? 500 : options.dispatcherIntervalMs },
       Alerts,
       OutboxDispatcher,
     ],
