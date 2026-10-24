@@ -176,8 +176,10 @@ Rules (our assumptions):
   land within one dispatcher tick, or the entry sits in backoff): no email. The dispatcher
   checks the current status before sending and marks the entry `skipped`. If a newer snapshot
   confirms it again, the skipped entry goes back to `pending` (the guest never got one).
-  A cancel that commits in the milliseconds between that check and the send can still slip
-  through; closing it would mean holding a lock across the provider call.
+  A cancel that commits between the claim and the send (which can include the batch's earlier
+  sends) can still slip through; closing it would mean holding a lock across the provider call.
+  The skip itself is a compare-and-set on the reservation's status, so a reconfirmation that
+  lands after the claim is never lost.
 
 ## 5. Concurrency
 
