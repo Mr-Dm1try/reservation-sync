@@ -12,6 +12,6 @@ describe('app boot', () => {
   it('serves /health and /debug/emails', async () => {
     await request(handle.app.getHttpServer()).get('/health').expect(200, { status: 'ok' });
     const res = await request(handle.app.getHttpServer()).get('/debug/emails').expect(200);
-    expect(res.body.delivered).toEqual([]);
+    expect(res.body).toMatchObject({ delivered: [], pendingOutbox: 0 });
   });
 });
