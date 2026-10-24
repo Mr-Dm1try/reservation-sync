@@ -68,6 +68,18 @@ describe('ReservationsRepository (PGlite)', () => {
     expect(rows[0]).toMatchObject({ key: 'confirmation:r1', payload: { to: 'ada@example.com' } });
   });
 
+  it('revives a skipped entry when the reservation is confirmed again, but never a sent one', async () => {
+    await repo.apply(event('e1', '2026-01-01T10:00:00Z', 'confirmed'));
+    await repo.apply(event('e2', '2026-01-01T11:00:00Z', 'cancelled'));
+    await db.query(`UPDATE outbox SET status = 'skipped'`); // what the dispatcher does on a cancel
+    await repo.apply(event('e3', '2026-01-01T12:00:00Z', 'confirmed'));
+    expect(await db.query(`SELECT status FROM outbox`)).toEqual([{ status: 'pending' }]);
+
+    await db.query(`UPDATE outbox SET status = 'sent'`);
+    await repo.apply(event('e4', '2026-01-01T13:00:00Z', 'confirmed'));
+    expect(await db.query(`SELECT status FROM outbox`)).toEqual([{ status: 'sent' }]);
+  });
+
   it('writes no outbox entry when the confirmation is stale (cancel already applied)', async () => {
     await repo.apply(event('e2', '2026-01-01T11:00:00Z', 'cancelled'));
     await repo.apply(event('e1', '2026-01-01T10:00:00Z', 'confirmed'));

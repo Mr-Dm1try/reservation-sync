@@ -10,7 +10,12 @@ export class Alerts {
   private readonly logger = new Logger('Alerts');
   readonly counts = { timestampTie: 0 };
 
-  /** Two different events for one reservation share the same occurredAt. */
+  /**
+   * Two different events for one reservation share the same occurredAt.
+   * Counts deliveries, not anomalies: each redelivery of the losing event alerts again (no
+   * processed-events store to remember it). Non-zero means "look"; exact counts only hold
+   * when the delivery order is fixed.
+   */
   timestampTie(reservationId: string, storedEventId: string, incomingEventId: string): void {
     this.counts.timestampTie++;
     this.logger.error(

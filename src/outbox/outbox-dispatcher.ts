@@ -25,11 +25,16 @@ type ClaimedEntry = {
  * their next_attempt_at out by a lease, so no row lock is held during the network call. A crash
  * after the send but before the mark means a resend once the lease expires; the provider-side
  * idempotency key (the outbox key) stops that from reaching the guest twice.
+ *
+ * Entries whose reservation is cancelled by the time we get to them are marked 'skipped', not
+ * sent (DECISIONS.md, section 4). Within one process, batches never overlap (the timer and
+ * drainUntilIdle take turns), so ignoring backoff can't re-claim a row that is being sent.
  */
 @Injectable()
 export class OutboxDispatcher implements OnModuleDestroy {
   private readonly logger = new Logger(OutboxDispatcher.name);
   private timer?: NodeJS.Timeout;
+  private running?: Promise<number>;
 
   constructor(
     @Inject(DB) private readonly db: Db,
@@ -41,6 +46,7 @@ export class OutboxDispatcher implements OnModuleDestroy {
   start(): void {
     if (this.intervalMs === null || this.timer) return;
     this.timer = setInterval(() => {
+      if (this.running) return; // previous tick still sending
       this.drainOnce().catch((err) => this.logger.error(err));
     }, this.intervalMs);
   }
@@ -54,6 +60,26 @@ export class OutboxDispatcher implements OnModuleDestroy {
    * `ignoreBackoff` treats every pending entry as due (used by drainUntilIdle).
    */
   async drainOnce({ ignoreBackoff = false } = {}): Promise<number> {
+    // Wait for our own in-flight batch; waiters resume one at a time, so only one wins the slot.
+    while (this.running) await this.running.catch(() => undefined);
+    this.running = this.drainBatch(ignoreBackoff);
+    try {
+      return await this.running;
+    } finally {
+      this.running = undefined;
+    }
+  }
+
+  private async drainBatch(ignoreBackoff: boolean): Promise<number> {
+    // Cancelled since the entry was written: don't tell the guest it's confirmed. A cancel that
+    // commits between this check and the send still slips through; closing that would mean
+    // holding a lock across the network call.
+    await this.db.query(
+      `UPDATE outbox o SET status = 'skipped', last_error = 'reservation cancelled before send'
+       FROM reservations_last_event r
+       WHERE o.status = 'pending' AND r.reservation_id = o.reservation_id AND r.status = 'cancelled'`,
+    );
+
     const claimed = await this.db.query<ClaimedEntry>(
       `UPDATE outbox
        SET attempts = attempts + 1, next_attempt_at = now() + $1 * interval '1 millisecond'
@@ -91,7 +117,8 @@ export class OutboxDispatcher implements OnModuleDestroy {
   /**
    * Keeps draining until nothing is pending, ignoring backoff delays, so tests can settle
    * deterministically without sleeping. Throws if entries are still pending after maxRounds.
-   * Test/demo helper: run it with background polling off, since it also re-claims leased rows.
+   * Safe next to this process's timer. It does re-claim rows leased by *another* process, so it
+   * stays a test/demo helper for a single instance.
    */
   async drainUntilIdle(maxRounds = 20): Promise<void> {
     for (let round = 0; round < maxRounds; round++) {
