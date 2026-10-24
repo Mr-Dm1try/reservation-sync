@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { AppHandle, createApp } from '../src/app';
+import { createTestDb } from './test-db';
 import { FakeEmailSender } from '../src/email/fake-email-sender';
 
 const event = (eventId: string, occurredAt: string, status: string, extra: object = {}) => ({
@@ -25,7 +26,7 @@ describe('core sync (e2e)', () => {
 
   beforeEach(async () => {
     sender = new FakeEmailSender();
-    handle = await createApp({ emailSender: sender, dispatcherIntervalMs: null, logger: false });
+    handle = await createApp({ db: await createTestDb(), emailSender: sender, dispatcherIntervalMs: null, logger: false });
   });
   afterEach(() => handle.close());
 

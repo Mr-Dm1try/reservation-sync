@@ -211,7 +211,7 @@ Options considered:
 | Option | Verdict |
 |---|---|
 | PGlite | **Chosen.** Real Postgres dialect (`ON CONFLICT ... WHERE`, row-value comparison, `RETURNING`), zero setup |
-| Postgres in docker-compose | Proves real concurrent races, but reviewers need Docker and setup eats the time-box. Extra: run the same test suite against it |
+| Postgres in docker-compose | Proves real concurrent races, but reviewers need Docker. **Added as an opt-in second driver** (below): same SQL, same suites |
 | SQLite | Supports similar upsert syntax, but not the production dialect |
 | pg-mem (JS emulation) | Patchy on exactly the `ON CONFLICT ... WHERE` behaviour we rely on |
 | In-memory map + keyed mutex | Simplest, but everything "production" would be a promise in the README |
@@ -219,6 +219,25 @@ Options considered:
 Honest limitation: PGlite is a single connection, so two transactions never truly run in
 parallel. The SQL below is race-safe by construction (Postgres semantics), but the test
 suite can't *prove* it under real concurrency; that's what the docker-Postgres extra is for.
+
+### Real Postgres as a second driver (extra)
+`src/db/postgres-db.ts` implements the same `Db` port with a node-postgres `Pool`; `main.ts`
+uses it when `DATABASE_URL` is set, PGlite otherwise. No business SQL changed. Types match the
+PGlite adapter with pg's defaults (timestamptz -> `Date`, jsonb parsed, int4 -> number; a bare
+`count(*)` is int8 and would come back as a string, hence `::int`), checked by a test that runs on
+both. Schema DDL runs under `pg_advisory_lock`: two instances starting at once can both pass
+`CREATE TABLE IF NOT EXISTS` and one fails on a duplicate catalog entry.
+Connections set `lock_timeout=5s` and `idle_in_transaction_session_timeout=30s`: now that row
+locks really block, a stuck transaction would otherwise hold up every later webhook for that
+reservation; with the timeout the request fails with a 5xx and the source redelivers (section 6).
+
+`npm run test:pg` runs every suite (unit, e2e, catalogue, chaos seeds) against it, each test file
+in its own schema. With a pool, concurrent requests get their own connections and really race,
+which PGlite can't show. `test/concurrency.e2e-spec.ts` runs two app instances on one database
+(insert-if-absent races, shuffled updates, two dispatchers draining at once). Checked by
+mutation: on Postgres, dropping `FOR UPDATE` from `lockCurrent` gives lost updates (an older
+confirmation over a newer one) and dropping `FOR UPDATE SKIP LOCKED` from the claim gives 20 to
+50 duplicate sends out of 50; on PGlite both mutations pass unnoticed. CI runs the suites on both.
 
 With the database doing the arbitration, **no application-level lock is needed**.
 
@@ -291,12 +310,12 @@ so several dispatcher instances never pick the same row (a no-op on PGlite, corr
 ```
 src/
   events/        event schema + validation (zod), raw event log repository + GET /events
-  db/           Db interface, PGlite driver, schema migration (reservations, outbox, events_received)
+  db/           Db interface, PGlite driver, Postgres (pg Pool) driver, schema migration (reservations, outbox, events_received)
   reservations/  decide() (pure), repository (insert-if-absent + row lock), service, controller
   outbox/        outbox repository, dispatcher (interval + retry)
   email/         EmailSender interface + FakeEmailSender (records sends, honours idempotency key, can fail)
 simulator/       scenario types, named scenarios, generator + oracle, runner, CLI (step 1.5)
-test/            decide() unit tests, repository tests on PGlite, e2e = runner over all scenarios
+test/            e2e = runner over all scenarios, two-instance concurrency test; createTestDb() picks PGlite or Postgres
 ```
 
 ## 8. Test data and chaos catalogue (feeds step 1.5)
@@ -416,7 +435,7 @@ not per-delivery outcomes), which is why both sources exist.
 
 ## 9. Out of scope (stated, not forgotten)
 
-Running against a real Postgres (driver swap + docker-compose, listed as an extra), auth/HMAC signature check on the webhook, multi-instance
+Auth/HMAC signature check on the webhook, multi-instance
 deployment, cancellation emails, UI. Each is listed in the README as "next steps".
 
 ## 10. Observability (metrics)

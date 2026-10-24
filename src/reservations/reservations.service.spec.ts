@@ -1,7 +1,7 @@
 import { BadRequestException, Logger } from '@nestjs/common';
 import { Db } from '../db/db';
-import { createPgliteDb } from '../db/pglite-db';
 import { EventLogRepository } from '../events/event-log.repository';
+import { createTestDb, testDbKind } from '../../test/test-db';
 import { ReservationEvent, ReservationStatus } from '../events/reservation-event';
 import { Alerts } from '../observability/alerts';
 import { Metrics } from '../observability/metrics';
@@ -23,16 +23,16 @@ const event = (eventId: string, occurredAt: string, status: ReservationStatus = 
   },
 });
 
-describe('ReservationsService.apply (PGlite)', () => {
+describe(`ReservationsService.apply (${testDbKind})`, () => {
   let db: Db;
   let repo: ReservationsRepository;
   let service: ReservationsService;
   let eventLog: EventLogRepository;
   const outbox = () => db.query<{ key: string; payload: { to: string } }>(`SELECT key, payload FROM outbox`);
 
-  // One database for the file (PGlite boot takes seconds), emptied before each test.
+  // One database for the file (booting PGlite takes seconds), emptied before each test.
   beforeAll(async () => {
-    db = await createPgliteDb();
+    db = await createTestDb();
     repo = new ReservationsRepository(db);
     const outboxRepo = new OutboxRepository(db);
     const metrics = new Metrics(outboxRepo);

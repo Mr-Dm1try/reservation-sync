@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { history } from '../simulator/events';
 import { AppHandle, createApp } from '../src/app';
+import { createTestDb } from './test-db';
 
 describe('GET /events (e2e)', () => {
   let handle: AppHandle;
@@ -8,7 +9,7 @@ describe('GET /events (e2e)', () => {
   const send = (body: unknown) => http().post('/webhooks/reservations').send(body as object);
 
   beforeAll(async () => {
-    handle = await createApp({ dispatcherIntervalMs: null, logger: false });
+    handle = await createApp({ db: await createTestDb(), dispatcherIntervalMs: null, logger: false });
   });
   afterAll(() => handle.close());
 
