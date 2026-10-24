@@ -309,6 +309,8 @@ known.
 | 16 | Mixed timestamp formats | same instant as `Z` vs `+02:00`, ms vs no ms; must compare equal |
 | 17 | Many reservations interleaved | realistic mixed stream |
 | 18 | Email sender transient failures | fake sender fails X% of calls; still one email each |
+| 19 | Two different first events race | `created` and `updated` of a new reservation fired in parallel |
+| 20 | Un-cancel by a newer snapshot | cancel, then a newer confirmed snapshot: honoured, still one email |
 
 **What the tests assert** (invariants, true for any ordering):
 1. Final local state of each reservation == the delivered event with the greatest `(occurredAt, eventId)`.
@@ -349,8 +351,9 @@ type Expectation = {
 ```
 
 **Runner, in three phases:**
-1. **Send.** Boot the Nest app in-process on a fresh PGlite database, with a seeded
-   `FakeEmailSender` and a spy logger/metrics. Execute the steps in order over real HTTP
+1. **Send.** Boot the Nest app in-process with a `FakeEmailSender`, on an emptied PGlite
+   database (one PGlite per test file, tables truncated per scenario, because booting PGlite
+   is the slow part). Execute the steps in order over real HTTP
    (supertest), asserting each response status.
 2. **Settle.** Call `dispatcher.drainUntilIdle()`, which processes the outbox until there's
    nothing pending or retryable, instead of sleeping and hoping. Deterministic, no flaky timers.
@@ -364,7 +367,8 @@ type Expectation = {
    On failure it prints a readable diff and the seed.
 
 **Two sources of scenarios, same runner:**
-- **Named scenarios** (one file per catalogue row above, hand-written, about 15 lines each).
+- **Named scenarios** (`simulator/scenarios/catalogue.ts`, one entry per catalogue row above,
+  hand-written, about 15 lines each; steps can also pin the webhook's `outcome`).
   Fixed order, so expectations are exact, including email counts for order-dependent cases
   like "confirmed then cancelled". These are the ones we walk through in the interview.
 - **Generated scenarios** (fuzz). The generator builds a clean history for N reservations,
@@ -377,11 +381,20 @@ type Expectation = {
 
 **Same scenarios, two targets:**
 - `npm run test:e2e`: Jest runs every scenario in-process (above).
-- `npm run simulate -- --scenario late-cancel --url http://localhost:3000`: the same runner
-  fires a scenario at a running server and prints a PASS/FAIL table. Emails are read from a
-  `GET /debug/emails` endpoint that exists only when the server runs with `DEBUG_ENDPOINTS=1`
-  (opt-in, so a deploy can't expose it by accident). This is the
-  live demo for the walkthrough: start the app, run the simulator, watch it pass.
+- `npm run simulate -- --catalogue` (or `--scenario 4`, `--seed 42`, `--list`, `--url ...`):
+  the same runner fires scenarios at a running server (`npm run start:debug`) and prints
+  PASS/FAIL. It drives and reads the server through debug routes that exist only with
+  `DEBUG_ENDPOINTS=1` (opt-in, so a deploy can't expose them by accident):
+  `GET /debug/emails`, `POST /debug/email-failures`, `GET /debug/alerts`. Settle here means
+  polling until the outbox has nothing pending, so the server's own background dispatcher
+  does the sending (the real path, retries and backoff included). Because a live server keeps
+  state, the runner checks emails and alerts as deltas from a baseline taken before each
+  scenario. This is the live demo for the walkthrough.
+
+**Does the harness actually catch bugs?** Checked by mutation: comparing `occurredAt` as
+strings fails 7 catalogue scenarios, and re-applying equal keys (`>=` instead of `>`) fails 5.
+Generated scenarios alone don't catch those two (they check final state and email counts,
+not per-delivery outcomes), which is why both sources exist.
 
 ## 9. Out of scope (stated, not forgotten)
 
