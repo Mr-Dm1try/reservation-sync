@@ -4,15 +4,15 @@ import { Scenario } from '../simulator/scenario';
 import { catalogue } from '../simulator/scenarios/catalogue';
 import { inProcessTarget } from '../simulator/target';
 import { Db } from '../src/db/db';
-import { createPgliteDb } from '../src/db/pglite-db';
+import { createTestDb } from './test-db';
 
 jest.setTimeout(30_000);
 
-// One PGlite for the file (booting it is the slow part); each scenario gets a fresh app and
+// One database for the file (booting PGlite is the slow part); each scenario gets a fresh app and
 // empty tables. A failure prints every mismatch and the seed.
 let db: Db;
 beforeAll(async () => {
-  db = await createPgliteDb();
+  db = await createTestDb();
 });
 afterAll(() => db.close());
 

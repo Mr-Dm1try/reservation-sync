@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { Db } from '../db/db';
-import { createPgliteDb } from '../db/pglite-db';
+import { createTestDb, testDbKind } from '../../test/test-db';
 import { EmailMessage } from '../email/email-sender';
 import { FakeEmailSender } from '../email/fake-email-sender';
 import { Metrics } from '../observability/metrics';
@@ -12,7 +12,7 @@ import { ReservationsService } from '../reservations/reservations.service';
 import { ReservationEvent, ReservationStatus } from '../events/reservation-event';
 import { EventLogRepository } from '../events/event-log.repository';
 
-describe('OutboxDispatcher (PGlite)', () => {
+describe(`OutboxDispatcher (${testDbKind})`, () => {
   let db: Db;
   let sender: FakeEmailSender;
   let dispatcher: OutboxDispatcher;
@@ -33,7 +33,7 @@ describe('OutboxDispatcher (PGlite)', () => {
 
   beforeAll(async () => {
     Logger.overrideLogger(false); // the failure paths log a warning per attempt
-    db = await createPgliteDb();
+    db = await createTestDb();
   });
   beforeEach(async () => {
     await db.query(`TRUNCATE outbox, reservations_last_event`);

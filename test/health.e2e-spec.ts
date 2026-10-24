@@ -1,11 +1,12 @@
 import request from 'supertest';
 import { createApp, AppHandle } from '../src/app';
+import { createTestDb } from './test-db';
 
 describe('app boot', () => {
   let handle: AppHandle;
 
   beforeAll(async () => {
-    handle = await createApp({ dispatcherIntervalMs: null, debugEndpoints: true, logger: false });
+    handle = await createApp({ db: await createTestDb(), dispatcherIntervalMs: null, debugEndpoints: true, logger: false });
   });
   afterAll(() => handle.close());
 
