@@ -121,16 +121,11 @@ export class OutboxDispatcher implements OnModuleDestroy {
    * stays a test/demo helper for a single instance.
    */
   async drainUntilIdle(maxRounds = 20): Promise<void> {
+    // With backoff ignored, a round that claims nothing means nothing is pending.
     for (let round = 0; round < maxRounds; round++) {
-      if ((await this.pendingCount()) === 0) return;
-      await this.drainOnce({ ignoreBackoff: true });
+      if ((await this.drainOnce({ ignoreBackoff: true })) === 0) return;
     }
-    const pending = await this.pendingCount();
-    if (pending > 0) throw new Error(`Outbox not idle after ${maxRounds} rounds: ${pending} entries pending`);
-  }
-
-  private async pendingCount(): Promise<number> {
-    const [row] = await this.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM outbox WHERE status = 'pending'`);
-    return row.n;
+    const [{ n }] = await this.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM outbox WHERE status = 'pending'`);
+    if (n > 0) throw new Error(`Outbox not idle after ${maxRounds} rounds: ${n} entries pending`);
   }
 }
