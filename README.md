@@ -15,7 +15,18 @@ npm run start:debug       # same, plus the /debug routes the simulator needs (DE
 PGLITE_DATA_DIR=./data npm start   # persist to disk instead
 npm test                  # unit + e2e
 npm run test:unit
-npm run test:e2e
+npm run test:e2e          # catalogue + 20 generated chaos seeds + reshuffles
+FUZZ_SEEDS=200 npm run test:e2e   # more chaos
+```
+
+## Simulate against a running server
+
+```bash
+npm run start:debug                         # terminal 1 (debug routes on)
+npm run simulate -- --list                  # terminal 2: catalogue of messy-delivery cases
+npm run simulate -- --catalogue             # run them all, PASS/FAIL per case
+npm run simulate -- --scenario 16           # one case
+npm run simulate -- --seed 42               # one generated chaos stream (use a fresh server)
 ```
 
 ## Layout
