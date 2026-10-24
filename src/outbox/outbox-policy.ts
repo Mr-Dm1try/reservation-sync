@@ -16,6 +16,9 @@ export function sendDecision(kind: string, reservationStatus: ReservationStatus 
   return { action: 'send' };
 }
 
+/** How long an entry keeps retrying before it is dead-lettered: long enough to ride out a provider outage. */
+export const DEFAULT_RETRY_WINDOW_MS = 2 * 60 * 60_000;
+
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 5 * 60_000;
 
@@ -23,4 +26,20 @@ const BACKOFF_MAX_MS = 5 * 60_000;
 export function retryDelayMs(attempt: number): number {
   // 2 ** n is a double: past 2^1023 it becomes Infinity, which the cap still handles.
   return Math.min(BACKOFF_BASE_MS * 2 ** (attempt - 1), BACKOFF_MAX_MS);
+}
+
+export type FailureDecision = { action: 'retry'; delayMs: number } | { action: 'dead-letter' };
+
+/**
+ * After a failed send: retry with backoff while the next attempt still falls inside the retry
+ * window (measured from `pending_since`), otherwise dead-letter it so a human sees it. A time
+ * window, not an attempt count, because the requirement is "survive an outage of X", and a
+ * count would silently change meaning if the backoff did.
+ */
+export function onSendFailure(
+  entry: { attempts: number; pendingForMs: number },
+  retryWindowMs: number,
+): FailureDecision {
+  const delayMs = retryDelayMs(entry.attempts);
+  return entry.pendingForMs + delayMs > retryWindowMs ? { action: 'dead-letter' } : { action: 'retry', delayMs };
 }

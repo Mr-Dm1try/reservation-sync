@@ -15,13 +15,19 @@ CREATE TABLE IF NOT EXISTS outbox (
   reservation_id  text NOT NULL,
   kind            text NOT NULL,         -- e.g. 'confirmation_email'
   payload         jsonb NOT NULL,
-  status          text NOT NULL DEFAULT 'pending',  -- pending | sent | skipped (cancelled before send)
+  status          text NOT NULL DEFAULT 'pending',  -- pending | sent | skipped (cancelled before send) | failed (dead-lettered)
   attempts        integer NOT NULL DEFAULT 0,
+  pending_since   timestamptz NOT NULL DEFAULT now(),  -- start of the current retry window
+  failed_at       timestamptz,            -- when it was dead-lettered
   next_attempt_at timestamptz NOT NULL DEFAULT now(),
   last_error      text,
   created_at      timestamptz NOT NULL DEFAULT now(),
   sent_at         timestamptz
 );
+
+-- For databases created before the dead-letter columns existed (PGLITE_DATA_DIR).
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS pending_since timestamptz NOT NULL DEFAULT now();
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS failed_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox (next_attempt_at) WHERE status = 'pending';
 `;

@@ -153,9 +153,22 @@ Design: **transactional outbox + idempotency key.**
    atomic step* as the state change. A unique key means a second insert is a no-op.
 2. A dispatcher reads pending outbox entries, calls the (fake) email sender with the key as
    the idempotency key, then marks the entry `sent`.
-3. Sender fails: entry stays pending, retried with backoff. Crash after send but before
-   mark: retry happens, and the provider-side idempotency key stops the duplicate (the fake
-   sender simulates this).
+3. Sender fails: entry stays pending, retried with backoff (1s doubling, capped at 5 min).
+   Crash after send but before mark: retry happens, and the provider-side idempotency key stops
+   the duplicate (the fake sender simulates this).
+4. **Dead-letter after a time window, not an attempt count.** An entry keeps retrying for
+   `OUTBOX_RETRY_WINDOW_MS` (default **2h**) measured from `pending_since` (when it became
+   pending). When the next retry would land past the window, it is marked `failed` with its last
+   error, and alerted (error log `outbox_dead_lettered` + `outbox_send_total{result="dead_lettered"}`).
+   Why time: an attempt count with capped backoff gives up after a few minutes of provider
+   outage, and then every guest from that outage needs a manual resend. Two hours rides out a
+   typical incident; past that a human should look anyway (the confirmation is hours late).
+5. **Bulk retry:** `POST /outbox/retry-failed[?failedSince=<ISO-8601>]` puts `failed` entries
+   back to `pending` with a fresh window (`failedSince` scopes it to one incident). It only
+   touches `failed` rows, so running it twice is harmless; the idempotency key still guards
+   against a double send. Redeliveries and newer snapshots do **not** revive a `failed` entry
+   (only `skipped` ones are revived): giving up is an operator-visible state, so it comes back
+   through the operator. Internal route: in production it sits behind internal auth.
 
 Rules (our assumptions):
 - One confirmation per reservation, ever. Confirmed -> pending -> confirmed does not resend.
@@ -269,6 +282,8 @@ so several dispatcher instances never pick the same row (a no-op on PGlite, corr
 - Processing is inline (one transaction per event, then 200). At higher volume: persist the raw
   event, ack, process async.
 - Read side: `GET /reservations/:id`, `GET /reservations`, `GET /outbox` (for the demo and tests).
+- Operator: `POST /outbox/retry-failed[?failedSince=]` -> `{ requeued, keys }` (section 4); 400 on
+  a bad date.
 
 ## 7. Module layout (NestJS)
 
@@ -311,6 +326,8 @@ known.
 | 18 | Email sender transient failures | fake sender fails X% of calls; still one email each |
 | 19 | Two different first events race | `created` and `updated` of a new reservation fired in parallel |
 | 20 | Un-cancel by a newer snapshot | cancel, then a newer confirmed snapshot: honoured, still one email |
+| 21 | Long provider outage inside the retry window | sender fails 30 times in a row: still exactly one email, no alert (in-process only: real backoff takes ~an hour) |
+| 22 | Outage outlasts the retry window | entry dead-lettered and alerted, a redelivery doesn't revive it, bulk retry sends exactly once (in-process only: needs a zero window) |
 
 **What the tests assert** (invariants, true for any ordering):
 1. Final local state of each reservation == the delivered event with the greatest `(occurredAt, eventId)`.
@@ -411,8 +428,8 @@ question an on-call person would ask.
 |---|---|---|---|
 | `reservation_events_total{outcome}` | counter | What is the feed doing? `applied`, `duplicate`, `stale`, `ignored` (unknown type), `rejected` (400), `error` (500) | `error` or `rejected` rate > 0 for 5m; a jump in `stale`/`duplicate` means the source is retrying hard |
 | `reservation_event_timestamp_tie_total` | counter | Did two different events share an `occurredAt`? (section 2) | any increase: page, the source's ordering can't be trusted |
-| `outbox_send_total{result}` | counter | Email sends: `sent`, `failed` (will retry), `skipped` (cancelled before send) | `failed` / (`sent` + `failed`) high: provider trouble |
-| `outbox_entries{status}` | gauge | Outbox size by `pending`, `sent`, `skipped` | `pending` growing |
+| `outbox_send_total{result}` | counter | Email sends: `sent`, `failed` (will retry), `skipped` (cancelled before send), `dead_lettered` (gave up, section 4) | `failed` / (`sent` + `failed`) high: provider trouble; any `dead_lettered`: page, guests weren't told |
+| `outbox_entries{status}` | gauge | Outbox size by `pending`, `sent`, `skipped`, `failed` | `pending` growing; `failed` > 0 until someone runs the bulk retry |
 | `outbox_oldest_pending_age_seconds` | gauge | Is any email stuck? | > a few minutes: guests aren't getting confirmations |
 
 Decisions:
@@ -420,7 +437,8 @@ Decisions:
   per process (reset on restart; `rate()` handles that). The outbox gauges are a `count(*)` and
   a `min(created_at)` on scrape, so they're true across restarts and dispatcher instances. Cost:
   two small queries per scrape (fine at outbox sizes we expect; at scale, count only `pending`).
-  Age counts from `created_at`, so an entry revived from `skipped` (section 4) reads as old.
+  Age counts from `pending_since`, so an entry revived from `skipped` or requeued by the bulk
+  retry reads as fresh, not as hours old.
 - **The tie counter counts deliveries, not anomalies** (each redelivery of the losing event
   bumps it again, see `Alerts`). So the alert is "increased", not "equals N".
 - **Labels are bounded enums only.** No `reservationId` or guest data: unbounded cardinality

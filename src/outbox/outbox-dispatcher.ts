@@ -1,10 +1,12 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { EMAIL_SENDER, EmailSender } from '../email/email-sender';
 import { Metrics } from '../observability/metrics';
-import { retryDelayMs, sendDecision } from './outbox-policy';
+import { Alerts } from '../observability/alerts';
+import { DEFAULT_RETRY_WINDOW_MS, onSendFailure, sendDecision } from './outbox-policy';
 import { OutboxRepository } from './outbox.repository';
 
 export const DISPATCHER_INTERVAL_MS = Symbol('DISPATCHER_INTERVAL_MS');
+export const OUTBOX_RETRY_WINDOW_MS = Symbol('OUTBOX_RETRY_WINDOW_MS');
 
 const BATCH_SIZE = 20;
 /** A claimed entry is invisible to other dispatchers for this long; if we crash mid-send, it comes back. */
@@ -34,6 +36,8 @@ export class OutboxDispatcher implements OnModuleDestroy {
     @Inject(EMAIL_SENDER) private readonly sender: EmailSender,
     @Inject(DISPATCHER_INTERVAL_MS) private readonly intervalMs: number | null,
     private readonly metrics: Metrics,
+    private readonly alerts: Alerts,
+    @Inject(OUTBOX_RETRY_WINDOW_MS) private readonly retryWindowMs: number = DEFAULT_RETRY_WINDOW_MS,
   ) {}
 
   /** Starts background polling, unless the interval is null (tests drive it by hand). */
@@ -81,10 +85,17 @@ export class OutboxDispatcher implements OnModuleDestroy {
         await this.outbox.markSent(entry.key);
         this.metrics.outboxSends.inc({ result: 'sent' });
       } catch (err) {
-        this.metrics.outboxSends.inc({ result: 'failed' });
-        const delayMs = retryDelayMs(entry.attempts);
-        await this.outbox.markFailed(entry.key, String(err instanceof Error ? err.message : err), delayMs);
-        this.logger.warn(`send failed key=${entry.key} attempt=${entry.attempts} retryInMs=${delayMs}: ${err}`);
+        const error = String(err instanceof Error ? err.message : err);
+        const next = onSendFailure(entry, this.retryWindowMs);
+        if (next.action === 'dead-letter') {
+          await this.outbox.markDeadLettered(entry.key, error);
+          this.metrics.outboxSends.inc({ result: 'dead_lettered' });
+          this.alerts.outboxDeadLettered(entry.key, entry.attempts, error);
+        } else {
+          await this.outbox.markFailed(entry.key, error, next.delayMs);
+          this.metrics.outboxSends.inc({ result: 'failed' });
+          this.logger.warn(`send failed key=${entry.key} attempt=${entry.attempts} retryInMs=${next.delayMs}: ${err}`);
+        }
       }
     }
     return claimed.length;
@@ -96,7 +107,7 @@ export class OutboxDispatcher implements OnModuleDestroy {
    * Safe next to this process's timer. It does re-claim rows leased by *another* process, so it
    * stays a test/demo helper for a single instance.
    */
-  async drainUntilIdle(maxRounds = 20): Promise<void> {
+  async drainUntilIdle(maxRounds = 100): Promise<void> {
     // With backoff ignored, a round that claims nothing means nothing is pending.
     for (let round = 0; round < maxRounds; round++) {
       if ((await this.drainOnce({ ignoreBackoff: true })) === 0) return;

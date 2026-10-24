@@ -17,7 +17,7 @@ beforeAll(async () => {
 afterAll(() => db.close());
 
 async function check(scenario: Scenario) {
-  const target = await inProcessTarget({ db });
+  const target = await inProcessTarget({ db, ...scenario.app });
   try {
     const result = await runScenario(scenario, target);
     if (!result.passed) throw new Error(formatResult(result));

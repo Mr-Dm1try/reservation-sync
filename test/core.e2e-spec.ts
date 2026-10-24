@@ -61,6 +61,12 @@ describe('core sync (e2e)', () => {
     expect(outbox.body).toMatchObject([{ key: 'confirmation:r1', status: 'sent' }]);
   });
 
+  it('bulk retry of dead-lettered emails validates failedSince', async () => {
+    await http().post('/outbox/retry-failed?failedSince=yesterday').expect(400);
+    await http().post('/outbox/retry-failed?failedSince=2026-01-01T00:00:00Z').expect(200, { requeued: 0, keys: [] });
+    await http().post('/outbox/retry-failed').expect(200, { requeued: 0, keys: [] });
+  });
+
   it('a late confirmation after a cancel changes nothing and sends no email', async () => {
     await send(event('e2', '2026-01-01T11:00:00Z', 'cancelled')).expect(200, { outcome: 'applied' });
     await send(event('e1', '2026-01-01T10:00:00Z', 'confirmed')).expect(200, { outcome: 'stale' });
