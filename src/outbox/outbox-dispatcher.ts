@@ -66,13 +66,11 @@ export class OutboxDispatcher implements OnModuleDestroy {
     const claimed = await this.outbox.claim({ limit: BATCH_SIZE, leaseMs: LEASE_MS, ignoreBackoff });
 
     for (const entry of claimed) {
-      // Rules live in outbox-policy.ts. A cancel that commits between the claim and the send
-      // still slips through; closing that would mean holding a lock across the network call.
+      // Rules live in outbox-policy.ts. A cancel that commits between the claim and this entry's
+      // send still slips through; closing that would mean holding a lock across the network call.
       const decision = sendDecision(entry.kind, entry.reservationStatus);
-      if (decision.action === 'skip') {
-        await this.outbox.markSkipped(entry.key, decision.reason);
-        continue;
-      }
+      // False = the reservation changed since the claim (e.g. confirmed again), so send after all.
+      if (decision.action === 'skip' && (await this.outbox.markSkipped(entry, decision.reason))) continue;
       try {
         await this.sender.send({ idempotencyKey: entry.key, reservationId: entry.reservationId, ...entry.payload });
         await this.outbox.markSent(entry.key);

@@ -4,7 +4,11 @@ import { createPgliteDb } from '../db/pglite-db';
 import { EmailMessage } from '../email/email-sender';
 import { FakeEmailSender } from '../email/fake-email-sender';
 import { OutboxDispatcher } from './outbox-dispatcher';
-import { OutboxRepository } from './outbox.repository';
+import { ClaimedEntry, OutboxRepository } from './outbox.repository';
+import { Alerts } from '../observability/alerts';
+import { ReservationsRepository } from '../reservations/reservations.repository';
+import { ReservationsService } from '../reservations/reservations.service';
+import { ReservationEvent, ReservationStatus } from '../events/reservation-event';
 
 describe('OutboxDispatcher (PGlite)', () => {
   let db: Db;
@@ -80,6 +84,31 @@ describe('OutboxDispatcher (PGlite)', () => {
     await dispatcher.drainUntilIdle();
     expect(sender.delivered.map((m) => m.reservationId)).toEqual(['r2']);
     expect(await row('confirmation:r1')).toMatchObject({ status: 'skipped', last_error: 'reservation cancelled before send' });
+  });
+
+  it('still sends when the reservation is confirmed again between the claim and the skip', async () => {
+    const event = (eventId: string, hour: number, status: ReservationStatus): ReservationEvent => ({
+      eventId,
+      type: 'reservation.updated',
+      reservationId: 'r1',
+      occurredAt: `2026-01-01T${hour}:00:00Z`,
+      data: { status, guest: { name: 'Ada', email: 'ada@example.com' }, checkIn: '2026-03-01', checkOut: '2026-03-04', roomType: 'double' },
+    });
+    const outbox = new OutboxRepository(db);
+    const service = new ReservationsService(db, new ReservationsRepository(db), outbox, new Alerts());
+    await service.apply(event('e1', 10, 'confirmed'));
+    await service.apply(event('e2', 11, 'cancelled'));
+
+    // The claim sees 'cancelled'; a newer confirmed snapshot lands before the skip is written.
+    const markSkipped = outbox.markSkipped.bind(outbox);
+    outbox.markSkipped = async (entry: ClaimedEntry, reason: string) => {
+      await service.apply(event('e3', 12, 'confirmed'));
+      return markSkipped(entry, reason);
+    };
+    await new OutboxDispatcher(outbox, sender, null).drainUntilIdle();
+
+    expect(sender.deliveredFor('r1')).toHaveLength(1);
+    expect(await row('confirmation:r1')).toMatchObject({ status: 'sent' });
   });
 
   it('drainUntilIdle never re-claims an entry the background tick is still sending', async () => {

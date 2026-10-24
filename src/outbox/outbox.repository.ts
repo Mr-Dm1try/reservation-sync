@@ -82,8 +82,25 @@ export class OutboxRepository {
     await this.db.query(`UPDATE outbox SET status = 'sent', sent_at = now(), last_error = NULL WHERE key = $1`, [key]);
   }
 
-  async markSkipped(key: string, reason: string): Promise<void> {
-    await this.db.query(`UPDATE outbox SET status = 'skipped', last_error = $2 WHERE key = $1`, [key, reason]);
+  /**
+   * Marks a claimed entry skipped, but only if its reservation's status is still the one the skip
+   * was decided on (compare-and-set). Locks the reservation row first, the same order as the
+   * webhook transaction, so a newer snapshot either lands before (we return false and the caller
+   * sends) or after (it sees 'skipped' and revives the entry via enqueue).
+   */
+  markSkipped(entry: ClaimedEntry, reason: string): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const [current] = await tx.query<{ status: ReservationStatus }>(
+        `SELECT status FROM reservations_last_event WHERE reservation_id = $1 FOR SHARE`,
+        [entry.reservationId],
+      );
+      if (current?.status !== entry.reservationStatus) return false;
+      const updated = await tx.query(
+        `UPDATE outbox SET status = 'skipped', last_error = $2 WHERE key = $1 AND status = 'pending' RETURNING key`,
+        [entry.key, reason],
+      );
+      return updated.length > 0;
+    });
   }
 
   async markFailed(key: string, error: string, retryInMs: number): Promise<void> {
