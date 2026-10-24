@@ -1,14 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { DB, Db } from '../db/db';
+import { DB, Db, Queryable } from '../db/db';
 import { ReservationEvent, ReservationSnapshot } from '../events/reservation-event';
-import { confirmationEmail, confirmationKey } from './confirmation-email';
-import { decide, Decision } from './decide';
+import { StoredKey } from './decide';
 import { ReservationView } from './reservation-view';
-
-export type ApplyResult = Decision & {
-  /** eventId of the stored record before this event, if there was one (for the tie alert). */
-  storedEventId?: string;
-};
 
 type ReservationRow = {
   reservation_id: string;
@@ -18,63 +12,41 @@ type ReservationRow = {
 };
 
 /**
- * Applies events with "insert if absent, then lock the row and decide in code"
- * (DECISIONS.md, section 5, option 1). One transaction per event; the primary key settles the
- * race for the first write, and the row lock serializes everything after it.
+ * SQL for the reservations_last_event table. No business rules here: the service runs the
+ * steps of DECISIONS.md section 5 (option 1) in one transaction and decides with decide().
  */
 @Injectable()
 export class ReservationsRepository {
   constructor(@Inject(DB) private readonly db: Db) {}
 
-  apply(event: ReservationEvent): Promise<ApplyResult> {
-    const occurredAt = new Date(event.occurredAt).toISOString();
-    const params = [event.reservationId, occurredAt, event.eventId, event.data.status, JSON.stringify(event.data)];
+  /** Stores the event's snapshot if the reservation has no row yet. False = a row exists. */
+  async insertIfAbsent(tx: Queryable, event: ReservationEvent): Promise<boolean> {
+    const inserted = await tx.query(
+      `INSERT INTO reservations_last_event (reservation_id, occurred_at, last_event_id, status, data)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (reservation_id) DO NOTHING
+       RETURNING reservation_id`,
+      rowParams(event),
+    );
+    return inserted.length > 0;
+  }
 
-    return this.db.transaction(async (tx) => {
-      const inserted = await tx.query(
-        `INSERT INTO reservations_last_event (reservation_id, occurred_at, last_event_id, status, data)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (reservation_id) DO NOTHING
-         RETURNING reservation_id`,
-        params,
-      );
+  /** Locks the reservation's row until the transaction ends and returns its ordering key. */
+  async lockCurrent(tx: Queryable, reservationId: string): Promise<StoredKey> {
+    const [row] = await tx.query<Pick<ReservationRow, 'occurred_at' | 'last_event_id'>>(
+      `SELECT occurred_at, last_event_id FROM reservations_last_event WHERE reservation_id = $1 FOR UPDATE`,
+      [reservationId],
+    );
+    return { occurredAt: row.occurred_at, lastEventId: row.last_event_id };
+  }
 
-      let result: ApplyResult;
-      if (inserted.length > 0) {
-        result = { outcome: 'applied', tie: false };
-      } else {
-        const [current] = await tx.query<Pick<ReservationRow, 'occurred_at' | 'last_event_id'>>(
-          `SELECT occurred_at, last_event_id FROM reservations_last_event WHERE reservation_id = $1 FOR UPDATE`,
-          [event.reservationId],
-        );
-        result = {
-          ...decide({ occurredAt: current.occurred_at, lastEventId: current.last_event_id }, event),
-          storedEventId: current.last_event_id,
-        };
-        if (result.outcome === 'applied') {
-          await tx.query(
-            `UPDATE reservations_last_event
-             SET occurred_at = $2, last_event_id = $3, status = $4, data = $5, updated_at = now()
-             WHERE reservation_id = $1`,
-            params,
-          );
-        }
-      }
-
-      // Same transaction as the state change. The unique key makes this "one email, ever".
-      // A 'skipped' entry (cancelled before it was sent) is revived: the guest never got one.
-      if (result.outcome === 'applied' && event.data.status === 'confirmed') {
-        await tx.query(
-          `INSERT INTO outbox (key, reservation_id, kind, payload)
-           VALUES ($1, $2, 'confirmation_email', $3)
-           ON CONFLICT (key) DO UPDATE
-           SET status = 'pending', payload = EXCLUDED.payload, attempts = 0, next_attempt_at = now(), last_error = NULL
-           WHERE outbox.status = 'skipped'`,
-          [confirmationKey(event.reservationId), event.reservationId, JSON.stringify(confirmationEmail(event))],
-        );
-      }
-      return result;
-    });
+  async replace(tx: Queryable, event: ReservationEvent): Promise<void> {
+    await tx.query(
+      `UPDATE reservations_last_event
+       SET occurred_at = $2, last_event_id = $3, status = $4, data = $5, updated_at = now()
+       WHERE reservation_id = $1`,
+      rowParams(event),
+    );
   }
 
   async findOne(reservationId: string): Promise<ReservationView | undefined> {
@@ -91,6 +63,12 @@ export class ReservationsRepository {
     );
     return rows.map(toView);
   }
+}
+
+/** occurred_at is stored normalised to UTC with ms, whatever offset the source sent. */
+function rowParams(event: ReservationEvent): unknown[] {
+  const occurredAt = new Date(event.occurredAt).toISOString();
+  return [event.reservationId, occurredAt, event.eventId, event.data.status, JSON.stringify(event.data)];
 }
 
 function toView(row: ReservationRow): ReservationView {

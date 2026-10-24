@@ -4,6 +4,7 @@ import { createPgliteDb } from '../db/pglite-db';
 import { EmailMessage } from '../email/email-sender';
 import { FakeEmailSender } from '../email/fake-email-sender';
 import { OutboxDispatcher } from './outbox-dispatcher';
+import { OutboxRepository } from './outbox.repository';
 
 describe('OutboxDispatcher (PGlite)', () => {
   let db: Db;
@@ -30,7 +31,7 @@ describe('OutboxDispatcher (PGlite)', () => {
   beforeEach(async () => {
     await db.query(`TRUNCATE outbox, reservations_last_event`);
     sender = new FakeEmailSender();
-    dispatcher = new OutboxDispatcher(db, sender, null);
+    dispatcher = new OutboxDispatcher(new OutboxRepository(db), sender, null);
   });
   afterAll(() => db.close());
 
@@ -78,7 +79,7 @@ describe('OutboxDispatcher (PGlite)', () => {
 
     await dispatcher.drainUntilIdle();
     expect(sender.delivered.map((m) => m.reservationId)).toEqual(['r2']);
-    expect(await row('confirmation:r1')).toMatchObject({ status: 'skipped', attempts: 0 });
+    expect(await row('confirmation:r1')).toMatchObject({ status: 'skipped', last_error: 'reservation cancelled before send' });
   });
 
   it('drainUntilIdle never re-claims an entry the background tick is still sending', async () => {

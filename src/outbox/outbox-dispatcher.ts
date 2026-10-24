@@ -1,21 +1,13 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { DB, Db } from '../db/db';
 import { EMAIL_SENDER, EmailSender } from '../email/email-sender';
+import { retryDelayMs, sendDecision } from './outbox-policy';
+import { OutboxRepository } from './outbox.repository';
 
 export const DISPATCHER_INTERVAL_MS = Symbol('DISPATCHER_INTERVAL_MS');
 
 const BATCH_SIZE = 20;
 /** A claimed entry is invisible to other dispatchers for this long; if we crash mid-send, it comes back. */
 const LEASE_MS = 60_000;
-const BACKOFF_BASE_MS = 1_000;
-const BACKOFF_MAX_MS = 5 * 60_000;
-
-type ClaimedEntry = {
-  key: string;
-  reservation_id: string;
-  payload: { to: string; subject: string; body: string };
-  attempts: number;
-};
 
 /**
  * Sends pending outbox entries (DECISIONS.md, section 4).
@@ -37,7 +29,7 @@ export class OutboxDispatcher implements OnModuleDestroy {
   private running?: Promise<number>;
 
   constructor(
-    @Inject(DB) private readonly db: Db,
+    private readonly outbox: OutboxRepository,
     @Inject(EMAIL_SENDER) private readonly sender: EmailSender,
     @Inject(DISPATCHER_INTERVAL_MS) private readonly intervalMs: number | null,
   ) {}
@@ -71,43 +63,22 @@ export class OutboxDispatcher implements OnModuleDestroy {
   }
 
   private async drainBatch(ignoreBackoff: boolean): Promise<number> {
-    // Cancelled since the entry was written: don't tell the guest it's confirmed. A cancel that
-    // commits between this check and the send still slips through; closing that would mean
-    // holding a lock across the network call.
-    await this.db.query(
-      `UPDATE outbox o SET status = 'skipped', last_error = 'reservation cancelled before send'
-       FROM reservations_last_event r
-       WHERE o.status = 'pending' AND r.reservation_id = o.reservation_id AND r.status = 'cancelled'`,
-    );
-
-    const claimed = await this.db.query<ClaimedEntry>(
-      `UPDATE outbox
-       SET attempts = attempts + 1, next_attempt_at = now() + $1 * interval '1 millisecond'
-       WHERE key IN (
-         SELECT key FROM outbox
-         WHERE status = 'pending' AND ($2 OR next_attempt_at <= now())
-         ORDER BY next_attempt_at
-         LIMIT $3
-         FOR UPDATE SKIP LOCKED
-       )
-       RETURNING key, reservation_id, payload, attempts`,
-      [LEASE_MS, ignoreBackoff, BATCH_SIZE],
-    );
+    const claimed = await this.outbox.claim({ limit: BATCH_SIZE, leaseMs: LEASE_MS, ignoreBackoff });
 
     for (const entry of claimed) {
+      // Rules live in outbox-policy.ts. A cancel that commits between the claim and the send
+      // still slips through; closing that would mean holding a lock across the network call.
+      const decision = sendDecision(entry.kind, entry.reservationStatus);
+      if (decision.action === 'skip') {
+        await this.outbox.markSkipped(entry.key, decision.reason);
+        continue;
+      }
       try {
-        await this.sender.send({ idempotencyKey: entry.key, reservationId: entry.reservation_id, ...entry.payload });
-        await this.db.query(
-          `UPDATE outbox SET status = 'sent', sent_at = now(), last_error = NULL WHERE key = $1`,
-          [entry.key],
-        );
+        await this.sender.send({ idempotencyKey: entry.key, reservationId: entry.reservationId, ...entry.payload });
+        await this.outbox.markSent(entry.key);
       } catch (err) {
-        const delayMs = Math.min(BACKOFF_BASE_MS * 2 ** (entry.attempts - 1), BACKOFF_MAX_MS);
-        await this.db.query(
-          `UPDATE outbox SET last_error = $2, next_attempt_at = now() + $3 * interval '1 millisecond'
-           WHERE key = $1`,
-          [entry.key, String(err instanceof Error ? err.message : err), delayMs],
-        );
+        const delayMs = retryDelayMs(entry.attempts);
+        await this.outbox.markFailed(entry.key, String(err instanceof Error ? err.message : err), delayMs);
         this.logger.warn(`send failed key=${entry.key} attempt=${entry.attempts} retryInMs=${delayMs}: ${err}`);
       }
     }
@@ -125,7 +96,7 @@ export class OutboxDispatcher implements OnModuleDestroy {
     for (let round = 0; round < maxRounds; round++) {
       if ((await this.drainOnce({ ignoreBackoff: true })) === 0) return;
     }
-    const [{ n }] = await this.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM outbox WHERE status = 'pending'`);
+    const n = await this.outbox.pendingCount();
     if (n > 0) throw new Error(`Outbox not idle after ${maxRounds} rounds: ${n} entries pending`);
   }
 }
