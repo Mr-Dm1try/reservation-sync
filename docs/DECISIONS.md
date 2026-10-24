@@ -227,6 +227,9 @@ PGlite adapter with pg's defaults (timestamptz -> `Date`, jsonb parsed, int4 -> 
 `count(*)` is int8 and would come back as a string, hence `::int`), checked by a test that runs on
 both. Schema DDL runs under `pg_advisory_lock`: two instances starting at once can both pass
 `CREATE TABLE IF NOT EXISTS` and one fails on a duplicate catalog entry.
+Connections set `lock_timeout=5s` and `idle_in_transaction_session_timeout=30s`: now that row
+locks really block, a stuck transaction would otherwise hold up every later webhook for that
+reservation; with the timeout the request fails with a 5xx and the source redelivers (section 6).
 
 `npm run test:pg` runs every suite (unit, e2e, catalogue, chaos seeds) against it, each test file
 in its own schema. With a pool, concurrent requests get their own connections and really race,

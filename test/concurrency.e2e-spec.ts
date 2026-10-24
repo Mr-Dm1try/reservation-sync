@@ -74,6 +74,15 @@ describe(`two instances, one database (${testDbKind})`, () => {
     expect(rows.filter((r) => !r.last_event_id.endsWith('-e5') || r.status !== 'confirmed')).toEqual([]);
     const [outbox] = await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM outbox WHERE status = 'pending'`);
     expect(outbox.n).toBe(N);
+
+    // The raw event log (DECISIONS.md, section 11) has one row per delivery, and each event is
+    // applied at most once, however its redeliveries interleave.
+    const [log] = await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM events_received`);
+    expect(log.n).toBe(deliveries.length);
+    const appliedTwice = await db.query(
+      `SELECT event_id FROM events_received WHERE outcome = 'applied' GROUP BY event_id HAVING count(*) > 1`,
+    );
+    expect(appliedTwice).toEqual([]);
   });
 
   it('two dispatchers draining at once send each email exactly once', async () => {

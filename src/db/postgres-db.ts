@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { Pool, PoolClient } from 'pg';
 import { Db, Queryable } from './db';
 import { SCHEMA_SQL } from './schema';
@@ -20,13 +21,14 @@ export type PostgresDbOptions = {
  * -> number. int8 (e.g. a bare count(*)) would come back as a string, hence `count(*)::int` in SQL.
  */
 export async function createPostgresDb(connectionString: string, options: PostgresDbOptions = {}): Promise<Db> {
-  const pool = new Pool({
-    connectionString,
-    max: options.max ?? 10,
-    options: options.schema ? `-c search_path=${options.schema}` : undefined,
-  });
+  // Row locks are real here (PGlite can't block): a stuck transaction would hold up every later
+  // webhook for that reservation. Time out instead, so the request fails and the source redelivers.
+  const settings = ['-c lock_timeout=5s', '-c idle_in_transaction_session_timeout=30s'];
+  if (options.schema) settings.push(`-c search_path=${options.schema}`);
+  const pool = new Pool({ connectionString, max: options.max ?? 10, options: settings.join(' ') });
   // An idle client erroring (e.g. the server restarted) must not crash the process; the next checkout reconnects.
-  pool.on('error', () => undefined);
+  const logger = new Logger('PostgresDb');
+  pool.on('error', (err) => logger.warn(`idle connection error: ${err.message}`));
 
   try {
     await migrate(pool);
