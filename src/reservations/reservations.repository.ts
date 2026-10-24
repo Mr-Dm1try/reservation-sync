@@ -62,11 +62,14 @@ export class ReservationsRepository {
       }
 
       // Same transaction as the state change. The unique key makes this "one email, ever".
+      // A 'skipped' entry (cancelled before it was sent) is revived: the guest never got one.
       if (result.outcome === 'applied' && event.data.status === 'confirmed') {
         await tx.query(
           `INSERT INTO outbox (key, reservation_id, kind, payload)
            VALUES ($1, $2, 'confirmation_email', $3)
-           ON CONFLICT (key) DO NOTHING`,
+           ON CONFLICT (key) DO UPDATE
+           SET status = 'pending', payload = EXCLUDED.payload, attempts = 0, next_attempt_at = now(), last_error = NULL
+           WHERE outbox.status = 'skipped'`,
           [confirmationKey(event.reservationId), event.reservationId, JSON.stringify(confirmationEmail(event))],
         );
       }

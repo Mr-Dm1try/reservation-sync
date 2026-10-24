@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { Db } from '../db/db';
 import { createPgliteDb } from '../db/pglite-db';
+import { EmailMessage } from '../email/email-sender';
 import { FakeEmailSender } from '../email/fake-email-sender';
 import { OutboxDispatcher } from './outbox-dispatcher';
 
@@ -27,7 +28,7 @@ describe('OutboxDispatcher (PGlite)', () => {
     db = await createPgliteDb();
   });
   beforeEach(async () => {
-    await db.query(`TRUNCATE outbox`);
+    await db.query(`TRUNCATE outbox, reservations_last_event`);
     sender = new FakeEmailSender();
     dispatcher = new OutboxDispatcher(db, sender, null);
   });
@@ -64,6 +65,39 @@ describe('OutboxDispatcher (PGlite)', () => {
 
     await dispatcher.drainUntilIdle();
     expect(sender.delivered).toHaveLength(45);
+    expect(sender.suppressedDuplicates).toBe(0);
+  });
+
+  it('skips, instead of sending, an entry whose reservation was cancelled before the send', async () => {
+    await enqueue('r1');
+    await enqueue('r2');
+    await db.query(
+      `INSERT INTO reservations_last_event (reservation_id, occurred_at, last_event_id, status, data)
+       VALUES ('r1', now(), 'e2', 'cancelled', '{}'), ('r2', now(), 'e1', 'confirmed', '{}')`,
+    );
+
+    await dispatcher.drainUntilIdle();
+    expect(sender.delivered.map((m) => m.reservationId)).toEqual(['r2']);
+    expect(await row('confirmation:r1')).toMatchObject({ status: 'skipped', attempts: 0 });
+  });
+
+  it('drainUntilIdle never re-claims an entry the background tick is still sending', async () => {
+    await enqueue('r1');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const send = sender.send.bind(sender);
+    sender.send = async (m: EmailMessage) => {
+      await gate;
+      return send(m);
+    };
+
+    const tick = dispatcher.drainOnce(); // what the interval timer does
+    const idle = dispatcher.drainUntilIdle();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    await Promise.all([tick, idle]);
+
+    expect(sender.attempts).toBe(1);
     expect(sender.suppressedDuplicates).toBe(0);
   });
 

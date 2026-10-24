@@ -172,6 +172,12 @@ Rules (our assumptions):
 - Cancelled before we ever saw it confirmed (e.g. the cancel arrives before the confirming update): no email.
   Good: we don't email a guest whose booking is already cancelled.
 - Email reflects the latest known state at the time the outbox entry is created.
+- Cancelled after we saw the confirm but before the email went out (e.g. confirm and cancel
+  land within one dispatcher tick, or the entry sits in backoff): no email. The dispatcher
+  checks the current status before sending and marks the entry `skipped`. If a newer snapshot
+  confirms it again, the skipped entry goes back to `pending` (the guest never got one).
+  A cancel that commits in the milliseconds between that check and the send can still slip
+  through; closing it would mean holding a lock across the provider call.
 
 ## 5. Concurrency
 

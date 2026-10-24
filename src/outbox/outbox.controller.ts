@@ -5,7 +5,7 @@ export type OutboxEntryView = {
   key: string;
   reservationId: string;
   kind: string;
-  status: 'pending' | 'sent';
+  status: 'pending' | 'sent' | 'skipped';
   attempts: number;
   lastError: string | null;
   nextAttemptAt: string;
