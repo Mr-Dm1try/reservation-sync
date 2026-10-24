@@ -47,3 +47,6 @@ test/                     e2e tests
 
 ## Next steps (out of the time-box)
 
+- Webhook auth: verify an HMAC signature from the PMS before parsing.
+- Multi-instance: the dispatcher already claims with `SKIP LOCKED` and a lease; `drainUntilIdle`
+  stays a single-instance test helper.

@@ -11,7 +11,7 @@ import { Alerts } from './observability/alerts';
 import { Metrics } from './observability/metrics';
 import { MetricsController } from './observability/metrics.controller';
 import { DISPATCHER_INTERVAL_MS, OUTBOX_RETRY_WINDOW_MS, OutboxDispatcher } from './outbox/outbox-dispatcher';
-import { DEFAULT_RETRY_WINDOW_MS } from './outbox/outbox-policy';
+import { DEFAULT_RETRY_WINDOW_MS, retryWindowMs } from './outbox/outbox-policy';
 import { OutboxController } from './outbox/outbox.controller';
 import { OutboxRepository } from './outbox/outbox.repository';
 import { ReservationsController } from './reservations/reservations.controller';
@@ -55,7 +55,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<AppHand
       { provide: DISPATCHER_INTERVAL_MS, useValue: options.dispatcherIntervalMs === undefined ? 500 : options.dispatcherIntervalMs },
       {
         provide: OUTBOX_RETRY_WINDOW_MS,
-        useValue: options.outboxRetryWindowMs ?? Number(process.env.OUTBOX_RETRY_WINDOW_MS ?? DEFAULT_RETRY_WINDOW_MS),
+        useValue: retryWindowMs(options.outboxRetryWindowMs ?? process.env.OUTBOX_RETRY_WINDOW_MS ?? DEFAULT_RETRY_WINDOW_MS),
       },
       Metrics,
       Alerts,

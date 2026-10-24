@@ -110,7 +110,8 @@ export class OutboxRepository {
     });
   }
 
-  async markFailed(key: string, error: string, retryInMs: number): Promise<void> {
+  /** A send failed but the retry window allows another try: stays 'pending', due again after `retryInMs`. */
+  async markRetry(key: string, error: string, retryInMs: number): Promise<void> {
     await this.db.query(
       `UPDATE outbox SET last_error = $2, next_attempt_at = now() + $3 * interval '1 millisecond' WHERE key = $1`,
       [key, error, retryInMs],

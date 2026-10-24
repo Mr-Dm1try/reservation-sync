@@ -1,4 +1,4 @@
-import { onSendFailure, retryDelayMs, sendDecision } from './outbox-policy';
+import { onSendFailure, retryDelayMs, retryWindowMs, sendDecision } from './outbox-policy';
 
 describe('sendDecision', () => {
   it('skips a confirmation whose reservation is now cancelled', () => {
@@ -36,5 +36,19 @@ describe('onSendFailure', () => {
   it('dead-letters once the next attempt would fall outside the window', () => {
     expect(onSendFailure({ attempts: 30, pendingForMs: window - 299_999 }, window)).toEqual({ action: 'dead-letter' });
     expect(onSendFailure({ attempts: 1, pendingForMs: 0 }, 0)).toEqual({ action: 'dead-letter' });
+  });
+});
+
+describe('retryWindowMs', () => {
+  it('accepts a non-negative number or numeric string', () => {
+    expect(retryWindowMs(7_200_000)).toBe(7_200_000);
+    expect(retryWindowMs('0')).toBe(0);
+    expect(retryWindowMs(' 60000 ')).toBe(60_000);
+  });
+
+  it('refuses anything that would silently disable dead-lettering', () => {
+    for (const bad of ['2h', '', '  ', 'NaN', '-1', -1, Infinity]) {
+      expect(() => retryWindowMs(bad)).toThrow(/OUTBOX_RETRY_WINDOW_MS/);
+    }
   });
 });

@@ -28,6 +28,18 @@ export function retryDelayMs(attempt: number): number {
   return Math.min(BACKOFF_BASE_MS * 2 ** (attempt - 1), BACKOFF_MAX_MS);
 }
 
+/**
+ * Validates the configured window at boot. A typo in OUTBOX_RETRY_WINDOW_MS would otherwise be
+ * NaN, and `x > NaN` is always false: nothing would ever be dead-lettered.
+ */
+export function retryWindowMs(raw: number | string): number {
+  const ms = typeof raw === 'number' ? raw : raw.trim() === '' ? NaN : Number(raw);
+  if (!Number.isFinite(ms) || ms < 0) {
+    throw new Error(`OUTBOX_RETRY_WINDOW_MS must be a non-negative number of milliseconds, got ${JSON.stringify(raw)}`);
+  }
+  return ms;
+}
+
 export type FailureDecision = { action: 'retry'; delayMs: number } | { action: 'dead-letter' };
 
 /**

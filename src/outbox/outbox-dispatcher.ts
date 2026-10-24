@@ -92,7 +92,7 @@ export class OutboxDispatcher implements OnModuleDestroy {
           this.metrics.outboxSends.inc({ result: 'dead_lettered' });
           this.alerts.outboxDeadLettered(entry.key, entry.attempts, error);
         } else {
-          await this.outbox.markFailed(entry.key, error, next.delayMs);
+          await this.outbox.markRetry(entry.key, error, next.delayMs);
           this.metrics.outboxSends.inc({ result: 'failed' });
           this.logger.warn(`send failed key=${entry.key} attempt=${entry.attempts} retryInMs=${next.delayMs}: ${err}`);
         }

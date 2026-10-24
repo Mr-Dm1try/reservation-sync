@@ -435,7 +435,7 @@ question an on-call person would ask.
 Decisions:
 - **Counters where things happen, gauges from the database at scrape time.** Counters are
   per process (reset on restart; `rate()` handles that). The outbox gauges are a `count(*)` and
-  a `min(created_at)` on scrape, so they're true across restarts and dispatcher instances. Cost:
+  a `min(pending_since)` on scrape, so they're true across restarts and dispatcher instances. Cost:
   two small queries per scrape (fine at outbox sizes we expect; at scale, count only `pending`).
   Age counts from `pending_since`, so an entry revived from `skipped` or requeued by the bulk
   retry reads as fresh, not as hours old.
