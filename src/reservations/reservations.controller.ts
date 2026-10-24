@@ -1,5 +1,7 @@
-import { Body, Controller, Get, HttpCode, NotImplementedException, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post } from '@nestjs/common';
 import { ReservationView } from './reservation-view';
+import { ReservationsRepository } from './reservations.repository';
+import { ReservationsService, WebhookOutcome } from './reservations.service';
 
 /**
  * API contract (DECISIONS.md, section 6):
@@ -7,25 +9,29 @@ import { ReservationView } from './reservation-view';
  *                                  400 for malformed, 500 on internal error (source retries).
  *  GET  /reservations           -> ReservationView[]
  *  GET  /reservations/:id       -> ReservationView, or 404
- * STEP 2 TODO: implement.
  */
 @Controller()
 export class ReservationsController {
+  constructor(
+    private readonly service: ReservationsService,
+    private readonly repo: ReservationsRepository,
+  ) {}
+
   @Post('webhooks/reservations')
   @HttpCode(200)
-  async receive(@Body() body: unknown): Promise<{ outcome: string }> {
-    void body;
-    throw new NotImplementedException();
+  receive(@Body() body: unknown): Promise<{ outcome: WebhookOutcome }> {
+    return this.service.receive(body);
   }
 
   @Get('reservations')
-  async list(): Promise<ReservationView[]> {
-    throw new NotImplementedException();
+  list(): Promise<ReservationView[]> {
+    return this.repo.findAll();
   }
 
   @Get('reservations/:id')
   async get(@Param('id') id: string): Promise<ReservationView> {
-    void id;
-    throw new NotImplementedException();
+    const view = await this.repo.findOne(id);
+    if (!view) throw new NotFoundException(`Reservation ${id} not found`);
+    return view;
   }
 }
