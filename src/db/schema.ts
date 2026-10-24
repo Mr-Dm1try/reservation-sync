@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   reservation_id  text NOT NULL,
   kind            text NOT NULL,         -- e.g. 'confirmation_email'
   payload         jsonb NOT NULL,
-  status          text NOT NULL DEFAULT 'pending',  -- pending | sent
+  status          text NOT NULL DEFAULT 'pending',  -- pending | sent | skipped (cancelled before send)
   attempts        integer NOT NULL DEFAULT 0,
   next_attempt_at timestamptz NOT NULL DEFAULT now(),
   last_error      text,
