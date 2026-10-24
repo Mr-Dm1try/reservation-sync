@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { EMAIL_SENDER, EmailSender } from '../email/email-sender';
+import { Metrics } from '../observability/metrics';
 import { retryDelayMs, sendDecision } from './outbox-policy';
 import { OutboxRepository } from './outbox.repository';
 
@@ -32,6 +33,7 @@ export class OutboxDispatcher implements OnModuleDestroy {
     private readonly outbox: OutboxRepository,
     @Inject(EMAIL_SENDER) private readonly sender: EmailSender,
     @Inject(DISPATCHER_INTERVAL_MS) private readonly intervalMs: number | null,
+    private readonly metrics: Metrics,
   ) {}
 
   /** Starts background polling, unless the interval is null (tests drive it by hand). */
@@ -70,11 +72,16 @@ export class OutboxDispatcher implements OnModuleDestroy {
       // send still slips through; closing that would mean holding a lock across the network call.
       const decision = sendDecision(entry.kind, entry.reservationStatus);
       // False = the reservation changed since the claim (e.g. confirmed again), so send after all.
-      if (decision.action === 'skip' && (await this.outbox.markSkipped(entry, decision.reason))) continue;
+      if (decision.action === 'skip' && (await this.outbox.markSkipped(entry, decision.reason))) {
+        this.metrics.outboxSends.inc({ result: 'skipped' });
+        continue;
+      }
       try {
         await this.sender.send({ idempotencyKey: entry.key, reservationId: entry.reservationId, ...entry.payload });
         await this.outbox.markSent(entry.key);
+        this.metrics.outboxSends.inc({ result: 'sent' });
       } catch (err) {
+        this.metrics.outboxSends.inc({ result: 'failed' });
         const delayMs = retryDelayMs(entry.attempts);
         await this.outbox.markFailed(entry.key, String(err instanceof Error ? err.message : err), delayMs);
         this.logger.warn(`send failed key=${entry.key} attempt=${entry.attempts} retryInMs=${delayMs}: ${err}`);

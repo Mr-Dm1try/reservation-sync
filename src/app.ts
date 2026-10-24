@@ -8,6 +8,8 @@ import { EMAIL_SENDER, EmailSender } from './email/email-sender';
 import { FakeEmailSender } from './email/fake-email-sender';
 import { HealthController } from './health.controller';
 import { Alerts } from './observability/alerts';
+import { Metrics } from './observability/metrics';
+import { MetricsController } from './observability/metrics.controller';
 import { DISPATCHER_INTERVAL_MS, OutboxDispatcher } from './outbox/outbox-dispatcher';
 import { OutboxController } from './outbox/outbox.controller';
 import { OutboxRepository } from './outbox/outbox.repository';
@@ -30,6 +32,7 @@ export type AppHandle = {
   db: Db;
   emailSender: EmailSender;
   alerts: Alerts;
+  metrics: Metrics;
   dispatcher: OutboxDispatcher;
   close(): Promise<void>;
 };
@@ -41,12 +44,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<AppHand
   const debug = options.debugEndpoints ?? process.env.DEBUG_ENDPOINTS === '1';
 
   @Module({
-    controllers: [HealthController, ReservationsController, OutboxController, ...(debug ? [DebugController] : [])],
+    controllers: [HealthController, MetricsController, ReservationsController, OutboxController, ...(debug ? [DebugController] : [])],
     providers: [
       { provide: DB, useValue: db },
       { provide: EMAIL_SENDER, useValue: emailSender },
       // Not `??`: null must stay null (it means "no polling").
       { provide: DISPATCHER_INTERVAL_MS, useValue: options.dispatcherIntervalMs === undefined ? 500 : options.dispatcherIntervalMs },
+      Metrics,
       Alerts,
       ReservationsRepository,
       OutboxRepository,
@@ -67,6 +71,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<AppHand
     db,
     emailSender,
     alerts: app.get(Alerts),
+    metrics: app.get(Metrics),
     dispatcher,
     async close() {
       await app.close();

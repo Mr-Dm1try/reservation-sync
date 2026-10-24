@@ -2,6 +2,7 @@ import { Db } from '../db/db';
 import { createPgliteDb } from '../db/pglite-db';
 import { ReservationEvent, ReservationStatus } from '../events/reservation-event';
 import { Alerts } from '../observability/alerts';
+import { Metrics } from '../observability/metrics';
 import { OutboxRepository } from '../outbox/outbox.repository';
 import { ReservationsRepository } from './reservations.repository';
 import { ReservationsService } from './reservations.service';
@@ -30,7 +31,9 @@ describe('ReservationsService.apply (PGlite)', () => {
   beforeAll(async () => {
     db = await createPgliteDb();
     repo = new ReservationsRepository(db);
-    service = new ReservationsService(db, repo, new OutboxRepository(db), new Alerts());
+    const outboxRepo = new OutboxRepository(db);
+    const metrics = new Metrics(outboxRepo);
+    service = new ReservationsService(db, repo, outboxRepo, new Alerts(metrics), metrics);
   });
   beforeEach(() => db.query(`TRUNCATE reservations_last_event, outbox`));
   afterAll(() => db.close());

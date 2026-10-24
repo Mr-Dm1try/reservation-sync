@@ -17,6 +17,7 @@ npm test                  # unit + e2e
 npm run test:unit
 npm run test:e2e          # catalogue + 20 generated chaos seeds + reshuffles
 FUZZ_SEEDS=200 npm run test:e2e   # more chaos
+curl localhost:3000/metrics       # Prometheus metrics (DECISIONS.md, section 10)
 ```
 
 ## Simulate against a running server
@@ -39,7 +40,7 @@ src/
   reservations/           webhook + read API, decide(), repository
   outbox/                 dispatcher: sends pending emails with retries
   email/                  EmailSender port + FakeEmailSender (simulated provider)
-  observability/alerts.ts "should never happen" signals (e.g. timestamp ties)
+  observability/          "should never happen" alerts (e.g. timestamp ties) and Prometheus metrics
 simulator/                scenarios, generator, e2e runner, CLI
 test/                     e2e tests
 ```
