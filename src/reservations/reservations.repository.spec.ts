@@ -27,7 +27,7 @@ describe('ReservationsRepository (PGlite)', () => {
     db = await createPgliteDb();
     repo = new ReservationsRepository(db);
   });
-  beforeEach(() => db.query(`TRUNCATE reservations, outbox`));
+  beforeEach(() => db.query(`TRUNCATE reservations_last_event, outbox`));
   afterAll(() => db.close());
 
   it('creates the record from the first event, whatever its type', async () => {
