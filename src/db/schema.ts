@@ -1,5 +1,6 @@
 export const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS reservations (
+-- One row per reservation: the last applied event (its ordering key + full snapshot).
+CREATE TABLE IF NOT EXISTS reservations_last_event (
   reservation_id text PRIMARY KEY,
   occurred_at    timestamptz NOT NULL,   -- ordering key, part 1 (from the last applied event)
   last_event_id  text NOT NULL,          -- ordering key, part 2 (tie-break)
