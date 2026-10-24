@@ -206,16 +206,16 @@ With the database doing the arbitration, **no application-level lock is needed**
    transaction per event:
    ```sql
    -- a) first event for this reservation? insert it, and we're done (outcome: applied)
-   INSERT INTO reservations (reservation_id, occurred_at, last_event_id, status, data)
+   INSERT INTO reservations_last_event (reservation_id, occurred_at, last_event_id, status, data)
    VALUES ($1, $2, $3, $4, $5)
    ON CONFLICT (reservation_id) DO NOTHING
    RETURNING reservation_id;
    -- b) otherwise the row exists now (ours or a concurrent one); lock it
-   SELECT occurred_at, last_event_id, status FROM reservations
+   SELECT occurred_at, last_event_id, status FROM reservations_last_event
    WHERE reservation_id = $1 FOR UPDATE;
    -- c) decide(current, event) in TypeScript -> applied | duplicate | stale (+ tie flag -> alert)
    -- d) only if applied:
-   UPDATE reservations SET occurred_at = $2, last_event_id = $3, status = $4, data = $5
+   UPDATE reservations_last_event SET occurred_at = $2, last_event_id = $3, status = $4, data = $5
    WHERE reservation_id = $1;
    -- e) if applied and status = 'confirmed':
    INSERT INTO outbox (key, reservation_id, payload)
@@ -371,7 +371,8 @@ type Expectation = {
 - `npm run test:e2e`: Jest runs every scenario in-process (above).
 - `npm run simulate -- --scenario late-cancel --url http://localhost:3000`: the same runner
   fires a scenario at a running server and prints a PASS/FAIL table. Emails are read from a
-  `GET /debug/emails` endpoint that exists only when `NODE_ENV !== 'production'`. This is the
+  `GET /debug/emails` endpoint that exists only when the server runs with `DEBUG_ENDPOINTS=1`
+  (opt-in, so a deploy can't expose it by accident). This is the
   live demo for the walkthrough: start the app, run the simulator, watch it pass.
 
 ## 9. Out of scope (stated, not forgotten)

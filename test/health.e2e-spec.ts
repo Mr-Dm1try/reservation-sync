@@ -5,7 +5,7 @@ describe('app boot', () => {
   let handle: AppHandle;
 
   beforeAll(async () => {
-    handle = await createApp({ dispatcherIntervalMs: null, logger: false });
+    handle = await createApp({ dispatcherIntervalMs: null, debugEndpoints: true, logger: false });
   });
   afterAll(() => handle.close());
 
