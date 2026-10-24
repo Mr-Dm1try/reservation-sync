@@ -24,4 +24,19 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 
 CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox (next_attempt_at) WHERE status = 'pending';
+
+-- Append-only log of every delivery, duplicates included. Audit and debugging only, never read
+-- for dedupe (DECISIONS.md, section 11). Envelope columns are nullable: a rejected body may lack them.
+CREATE TABLE IF NOT EXISTS events_received (
+  id             bigserial PRIMARY KEY,  -- received order
+  received_at    timestamptz NOT NULL DEFAULT now(),
+  event_id       text,
+  reservation_id text,
+  type           text,
+  occurred_at    timestamptz,
+  outcome        text NOT NULL,          -- applied | duplicate | stale | ignored | rejected
+  body           jsonb NOT NULL          -- raw body as received (holds guest PII)
+);
+
+CREATE INDEX IF NOT EXISTS events_received_reservation_idx ON events_received (reservation_id, received_at);
 `;

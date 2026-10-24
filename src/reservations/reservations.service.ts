@@ -6,6 +6,7 @@ import {
   ReservationEvent,
   reservationEventSchema,
 } from '../events/reservation-event';
+import { EventLogRepository } from '../events/event-log.repository';
 import { Alerts } from '../observability/alerts';
 import { Metrics } from '../observability/metrics';
 import { OutboxRepository } from '../outbox/outbox.repository';
@@ -30,6 +31,7 @@ export class ReservationsService {
     private readonly outbox: OutboxRepository,
     private readonly alerts: Alerts,
     private readonly metrics: Metrics,
+    private readonly eventLog: EventLogRepository,
   ) {}
 
   /** Two-phase parse (envelope, then full event for known types), then apply. */
@@ -44,18 +46,19 @@ export class ReservationsService {
 
   private async process(body: unknown): Promise<WebhookOutcome> {
     const envelope = eventEnvelopeSchema.safeParse(body);
-    if (!envelope.success) throw invalid(envelope.error.issues);
+    if (!envelope.success) return this.reject(body, envelope.error.issues);
 
     if (!isKnownEventType(envelope.data.type)) {
       this.logger.warn(`ignored unknown event type=${envelope.data.type} eventId=${envelope.data.eventId}`);
+      await this.eventLog.record(this.db, body, 'ignored');
       return 'ignored';
     }
 
     const parsed = reservationEventSchema.safeParse(body);
-    if (!parsed.success) throw invalid(parsed.error.issues);
+    if (!parsed.success) return this.reject(body, parsed.error.issues);
     const event = parsed.data;
 
-    const result = await this.apply(event);
+    const result = await this.apply(event, body);
     if (result.tie) this.alerts.timestampTie(event.reservationId, result.storedEventId!, event.eventId);
     this.logger.log(`event=${event.eventId} reservation=${event.reservationId} outcome=${result.outcome}`);
     return result.outcome;
@@ -64,9 +67,10 @@ export class ReservationsService {
   /**
    * "Insert if absent, then lock the row and decide in code" (DECISIONS.md, section 5, option 1),
    * in one transaction. The primary key settles the race for the first write; the row lock
-   * serializes everything after it, including the outbox write.
+   * serializes everything after it, including the outbox write and the event log row.
+   * `body` is the raw delivery for the log (defaults to the parsed event).
    */
-  apply(event: ReservationEvent): Promise<ApplyResult> {
+  apply(event: ReservationEvent, body: unknown = event): Promise<ApplyResult> {
     return this.db.transaction(async (tx) => {
       let result: ApplyResult;
       if (await this.reservations.insertIfAbsent(tx, event)) {
@@ -81,8 +85,18 @@ export class ReservationsService {
       if (result.outcome === 'applied' && event.data.status === 'confirmed') {
         await this.outbox.enqueue(tx, confirmationEntry(event));
       }
+      // Also in the transaction: the log can't record an outcome the state doesn't have.
+      await this.eventLog.record(tx, body, result.outcome);
       return result;
     });
+  }
+
+  /** Logs the rejected body, then answers 400. Best effort: a failed log write must not turn the 400 into a 500. */
+  private async reject(body: unknown, issues: unknown): Promise<never> {
+    await this.eventLog
+      .record(this.db, body, 'rejected')
+      .catch((err) => this.logger.error(`could not log rejected body: ${(err as Error).message}`));
+    throw invalid(issues);
   }
 }
 

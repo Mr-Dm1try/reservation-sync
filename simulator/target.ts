@@ -21,6 +21,8 @@ export interface Target {
   reservations(): Promise<ReservationView[]>;
   emails(): Promise<EmailReport>;
   alerts(): Promise<{ timestampTie: number }>;
+  /** Outcomes in the raw event log, in received order. In-process only (reads the DB directly). */
+  eventLog?(): Promise<string[]>;
   close(): Promise<void>;
 }
 
@@ -34,7 +36,7 @@ async function pendingOutbox(handle: AppHandle): Promise<number> {
  * a test file can pass one shared `db`: its tables are emptied first, and it is left open on close.
  */
 export async function inProcessTarget(options: { db?: Db } = {}): Promise<Target> {
-  if (options.db) await options.db.query(`TRUNCATE reservations_last_event, outbox`);
+  if (options.db) await options.db.query(`TRUNCATE reservations_last_event, outbox, events_received`);
   const emailSender = new FakeEmailSender();
   const handle = await createApp({ db: options.db, emailSender, dispatcherIntervalMs: null, logger: false });
   const http = handle.app.getHttpServer();
@@ -62,6 +64,10 @@ export async function inProcessTarget(options: { db?: Db } = {}): Promise<Target
     },
     async alerts() {
       return { ...handle.alerts.counts };
+    },
+    async eventLog() {
+      const rows = await handle.db.query<{ outcome: string }>(`SELECT outcome FROM events_received ORDER BY id`);
+      return rows.map((r) => r.outcome);
     },
     close: () => (options.db ? handle.app.close() : handle.close()),
   };
